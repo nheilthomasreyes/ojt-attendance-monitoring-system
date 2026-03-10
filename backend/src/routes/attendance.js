@@ -1,6 +1,6 @@
 // src/routes/attendance.js
-// Replaces all Supabase attendance_logs operations
-// UPDATED: added is_overtime support
+// FIXED: module.exports moved to end of file (was cutting off routes)
+// FIXED: task_accomplishment edit now falls back to Time In row if no Time Out exists
 
 const express         = require('express');
 const db              = require('../config/db');
@@ -32,7 +32,6 @@ router.post('/log', async (req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];
 
-    // Server-side duplicate check
     if (status === 'Time In') {
       const [existing] = await db.query(
         `SELECT id FROM attendance_logs 
@@ -80,14 +79,10 @@ router.post('/log', async (req, res) => {
       ? 'Ongoing...'
       : (task_accomplishment?.trim() || 'No task reported');
 
-    // is_overtime only applies on Time In
-    // On Time Out, carry over the overtime flag from the Time In record
     let overtimeValue = 0;
-
     if (status === 'Time In') {
       overtimeValue = is_overtime ? 1 : 0;
     } else {
-      // Carry over overtime flag from today's Time In record
       const [timeInRow] = await db.query(
         `SELECT is_overtime FROM attendance_logs
          WHERE student_id = ? AND status = 'Time In'
@@ -147,7 +142,6 @@ router.get('/status/:student_id', async (req, res) => {
       attendanceStatus = 'timed-in';
     }
 
-    // Get overtime flag from Time In record
     const timeInLog = logs.find(l => l.status === 'Time In');
     if (timeInLog) is_overtime = timeInLog.is_overtime === 1;
 
@@ -180,9 +174,9 @@ router.get('/all', verifyToken, async (req, res) => {
 router.get('/summary', verifyToken, async (req, res) => {
   const { student_id, month } = req.query;
   try {
-    let query  = `SELECT * FROM v_daily_attendance WHERE 1=1`;
+    let query    = `SELECT * FROM v_daily_attendance WHERE 1=1`;
     const params = [];
-    if (student_id) { query += ` AND student_id = ?`; params.push(student_id); }
+    if (student_id) { query += ` AND student_id = ?`;                            params.push(student_id); }
     if (month)      { query += ` AND DATE_FORMAT(attendance_date, '%Y-%m') = ?`; params.push(month); }
     query += ` ORDER BY attendance_date DESC`;
     const [records] = await db.query(query, params);
@@ -212,12 +206,9 @@ router.get('/total-hours/:student_id', verifyToken, async (req, res) => {
   }
 });
 
-module.exports = router;
-
 // -------------------------------------------------------
 // GET /api/attendance/history/:student_id
 // Student views their own shift history — no admin required
-// Returns grouped daily records with hours calculation
 // -------------------------------------------------------
 router.get('/history/:student_id', async (req, res) => {
   const { student_id } = req.params;
@@ -229,7 +220,6 @@ router.get('/history/:student_id', async (req, res) => {
       [student_id]
     );
 
-    // Group into daily records
     const groups = {};
     logs.forEach(r => {
       const dateKey = new Date(r.timestamp).toISOString().split('T')[0];
@@ -251,32 +241,35 @@ router.get('/history/:student_id', async (req, res) => {
         groups[dateKey].timeIn    = ts.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
         groups[dateKey].timeInRaw = ts;
         if (r.is_overtime) groups[dateKey].is_overtime = true;
+        // Show task from Time In if it's not the default placeholder
+        if (r.task_accomplishment && r.task_accomplishment !== 'Ongoing...')
+          groups[dateKey].task_accomplishment = r.task_accomplishment;
       }
       if (r.status === 'Time Out') {
         groups[dateKey].timeOut    = ts.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
         groups[dateKey].timeOutRaw = ts;
+        // Time Out task always wins over Time In task
         if (r.task_accomplishment && r.task_accomplishment !== 'Ongoing...')
           groups[dateKey].task_accomplishment = r.task_accomplishment;
       }
 
-      // Calculate hours
       const g = groups[dateKey];
       if (g.timeInRaw && g.timeOutRaw) {
-        const shiftStart = new Date(g.timeInRaw); shiftStart.setHours(8,0,0,0);
-        const effectiveIn  = g.timeInRaw  < shiftStart ? shiftStart : g.timeInRaw;
+        const shiftStart  = new Date(g.timeInRaw); shiftStart.setHours(8, 0, 0, 0);
+        const effectiveIn = g.timeInRaw < shiftStart ? shiftStart : g.timeInRaw;
         let   effectiveOut = g.timeOutRaw;
         if (!g.is_overtime) {
-          const shiftEnd = new Date(g.timeInRaw); shiftEnd.setHours(17,0,0,0);
+          const shiftEnd = new Date(g.timeInRaw); shiftEnd.setHours(17, 0, 0, 0);
           if (g.timeOutRaw > shiftEnd) effectiveOut = shiftEnd;
         }
-        let hrs = (effectiveOut - effectiveIn) / (1000*60*60);
+        let hrs = (effectiveOut - effectiveIn) / (1000 * 60 * 60);
         if (hrs > 5) hrs -= 1;
         g.totalHours = Math.max(0, parseFloat(hrs.toFixed(2)));
       }
     });
 
-    const records = Object.values(groups).sort((a,b) => new Date(b.date) - new Date(a.date));
-    const totalHours = records.reduce((s, r) => s + r.totalHours, 0);
+    const records      = Object.values(groups).sort((a, b) => new Date(b.date) - new Date(a.date));
+    const totalHours   = records.reduce((s, r) => s + r.totalHours, 0);
     const daysRendered = records.filter(r => r.timeIn && r.timeOut).length;
 
     res.json({ success: true, records, totalHours: totalHours.toFixed(2), daysRendered });
@@ -288,15 +281,16 @@ router.get('/history/:student_id', async (req, res) => {
 
 // -------------------------------------------------------
 // PUT /api/attendance/:date/student/:student_id
-// Admin edits an existing daily record (time in, time out,
-// task accomplishment, overtime flag)
+// Admin edits an existing daily record
+// FIXED: task_accomplishment falls back to Time In row
+//        if no Time Out row exists yet
 // -------------------------------------------------------
 router.put('/:date/student/:student_id', verifyToken, async (req, res) => {
   const { date, student_id } = req.params;
   const { time_in, time_out, task_accomplishment, is_overtime } = req.body;
 
   try {
-    // Update Time In record
+    // Update Time In timestamp + overtime flag
     if (time_in !== undefined) {
       const newTimestamp = new Date(`${date}T${time_in}:00`);
       await db.query(
@@ -306,7 +300,7 @@ router.put('/:date/student/:student_id', verifyToken, async (req, res) => {
       );
     }
 
-    // Update Time Out record
+    // Update Time Out timestamp
     if (time_out !== undefined) {
       const newTimestamp = new Date(`${date}T${time_out}:00`);
       await db.query(
@@ -316,13 +310,30 @@ router.put('/:date/student/:student_id', verifyToken, async (req, res) => {
       );
     }
 
-    // Update task accomplishment on Time Out record
+    // Update task accomplishment
+    // Try Time Out row first; fall back to Time In row if no Time Out exists yet
     if (task_accomplishment !== undefined) {
-      await db.query(
-        `UPDATE attendance_logs SET task_accomplishment = ?
-         WHERE student_id = ? AND status = 'Time Out' AND DATE(timestamp) = ?`,
-        [task_accomplishment, student_id, date]
+      const [timeOutRows] = await db.query(
+        `SELECT id FROM attendance_logs
+         WHERE student_id = ? AND status = 'Time Out' AND DATE(timestamp) = ?
+         LIMIT 1`,
+        [student_id, date]
       );
+
+      if (timeOutRows.length > 0) {
+        await db.query(
+          `UPDATE attendance_logs SET task_accomplishment = ?
+           WHERE student_id = ? AND status = 'Time Out' AND DATE(timestamp) = ?`,
+          [task_accomplishment, student_id, date]
+        );
+      } else {
+        // No Time Out yet — save on Time In row so edit is never lost
+        await db.query(
+          `UPDATE attendance_logs SET task_accomplishment = ?
+           WHERE student_id = ? AND status = 'Time In' AND DATE(timestamp) = ?`,
+          [task_accomplishment, student_id, date]
+        );
+      }
     }
 
     res.json({ success: true, message: 'Record updated successfully.' });
@@ -335,7 +346,6 @@ router.put('/:date/student/:student_id', verifyToken, async (req, res) => {
 // -------------------------------------------------------
 // POST /api/attendance/manual
 // Admin manually adds a full attendance record for a student
-// on a specific date (time in + time out + task)
 // -------------------------------------------------------
 router.post('/manual', verifyToken, async (req, res) => {
   const { student_id, date, time_in, time_out, task_accomplishment, is_overtime } = req.body;
@@ -348,7 +358,6 @@ router.post('/manual', verifyToken, async (req, res) => {
   }
 
   try {
-    // Get student name
     const [rows] = await db.query(
       'SELECT full_name FROM students WHERE id = ? LIMIT 1',
       [student_id]
@@ -358,7 +367,6 @@ router.post('/manual', verifyToken, async (req, res) => {
     }
     const student_name = rows[0].full_name;
 
-    // Check for existing record on that date
     const [existing] = await db.query(
       `SELECT id FROM attendance_logs
        WHERE student_id = ? AND DATE(timestamp) = ? LIMIT 1`,
@@ -371,17 +379,15 @@ router.post('/manual', verifyToken, async (req, res) => {
       });
     }
 
-    const timeInTs  = new Date(`${date}T${time_in}:00`);
+    const timeInTs    = new Date(`${date}T${time_in}:00`);
     const overtimeVal = is_overtime ? 1 : 0;
 
-    // Insert Time In
     await db.query(
       `INSERT INTO attendance_logs (student_id, student_name, status, task_accomplishment, is_overtime, timestamp)
        VALUES (?, ?, 'Time In', 'Ongoing...', ?, ?)`,
       [student_id, student_name, overtimeVal, timeInTs]
     );
 
-    // Insert Time Out if provided
     if (time_out) {
       const timeOutTs = new Date(`${date}T${time_out}:00`);
       await db.query(
@@ -397,3 +403,10 @@ router.post('/manual', verifyToken, async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 });
+
+// -------------------------------------------------------
+// ⚠️  module.exports MUST be at the very end of the file
+//     Having it in the middle was silently cutting off
+//     history, PUT edit, and manual routes
+// -------------------------------------------------------
+module.exports = router;

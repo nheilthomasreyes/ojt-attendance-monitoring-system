@@ -1,11 +1,11 @@
 // ============================================================
-//  StudentPage.js — UPDATED: Overtime toggle added
+//  StudentPage.js — UPDATED: Overtime toggle + Change Password
 // ============================================================
 
 import { useState, useEffect, useRef } from 'react';
 import { QRScanner } from './QRScanner';
 import { NetworkDetector } from './NetworkDetector';
-import { UserCircle, LogIn, LogOut, Zap, ArrowLeft, CheckCircle2, ClipboardList, Clock, History } from 'lucide-react';
+import { UserCircle, LogIn, LogOut, Zap, ArrowLeft, CheckCircle2, ClipboardList, Clock, History, KeyRound, Eye, EyeOff, Check, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast, Toaster } from 'sonner';
 
@@ -22,11 +22,14 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
   const [loadingStatus, setLoadingStatus]           = useState(true);
 
   // ── OVERTIME STATE ─────────────────────────────────────
-  // isOvertime: toggled by student before Time In
-  // isOvertimeLocked: true once Time In is recorded with overtime ON
-  //                   prevents unchecking after Time In
-  const [isOvertime, setIsOvertime]           = useState(false);
+  const [isOvertime, setIsOvertime]             = useState(false);
   const [isOvertimeLocked, setIsOvertimeLocked] = useState(false);
+
+  // ── CHANGE PASSWORD STATE ──────────────────────────────
+  const [isEditingPassword, setIsEditingPassword] = useState(false);
+  const [passwordForm, setPasswordForm]           = useState({ current: '', newPass: '', confirm: '' });
+  const [showPasswords, setShowPasswords]         = useState({ current: false, newPass: false, confirm: false });
+  const [savingPassword, setSavingPassword]       = useState(false);
 
   useEffect(() => {
     if (propSSID) setOfficeSSID(propSSID);
@@ -43,8 +46,6 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
         const data = await res.json();
         if (data.success) {
           setAttendanceStatus(data.status);
-
-          // If already timed in with overtime today, restore + lock the toggle
           if (data.is_overtime) {
             setIsOvertime(true);
             setIsOvertimeLocked(true);
@@ -62,13 +63,10 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
     fetchStatus();
   }, [student?.id]);
 
-  const handleNetworkDetected = (isConnected) => {
-    setIsNetworkAuthorized(isConnected);
-  };
+  const handleNetworkDetected = (isConnected) => setIsNetworkAuthorized(isConnected);
 
   // ── Handle overtime toggle ─────────────────────────────
   const handleOvertimeToggle = () => {
-    // Cannot uncheck once Time In is recorded with overtime
     if (isOvertimeLocked) {
       toast.error('OVERTIME LOCKED: Cannot uncheck after Time In is recorded.');
       return;
@@ -76,6 +74,49 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
     setIsOvertime(prev => !prev);
   };
 
+  // ── Handle Change Password ─────────────────────────────
+  const handleChangePassword = async () => {
+    const { current, newPass, confirm } = passwordForm;
+
+    if (!current || !newPass || !confirm)
+      return toast.error('All password fields are required.');
+    if (newPass.length < 6)
+      return toast.error('New password must be at least 6 characters.');
+    if (newPass !== confirm)
+      return toast.error('New passwords do not match.');
+
+    setSavingPassword(true);
+    try {
+      const res  = await fetch(`${API}/api/students/${student.id}/password`, {
+        method:  'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization:  `Bearer ${localStorage.getItem('ojt_token')}`,
+        },
+        body: JSON.stringify({ current_password: current, new_password: newPass }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to update password.');
+
+      toast.success('Password updated successfully.');
+      cancelPasswordEdit();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSavingPassword(false);
+    }
+  };
+
+  const cancelPasswordEdit = () => {
+    setIsEditingPassword(false);
+    setPasswordForm({ current: '', newPass: '', confirm: '' });
+    setShowPasswords({ current: false, newPass: false, confirm: false });
+  };
+
+  const toggleShowPassword = (field) =>
+    setShowPasswords(prev => ({ ...prev, [field]: !prev[field] }));
+
+  // ── Scan handlers ──────────────────────────────────────
   const handleScanSuccess = async (decodedText) => {
     if (isProcessing.current) return;
     isProcessing.current = true;
@@ -97,7 +138,7 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
           task_accomplishment: attendanceType === 'time-in'
             ? 'Ongoing...'
             : (dailyTask.trim() || 'No task reported'),
-          is_overtime:         isOvertime,   // Send overtime flag to backend
+          is_overtime:         isOvertime,
           qr_session_id:       qrData.sessionId,
         }),
       });
@@ -107,7 +148,6 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
 
       if (attendanceType === 'time-in') {
         setAttendanceStatus('timed-in');
-        // Lock overtime toggle once Time In is recorded
         if (isOvertime) setIsOvertimeLocked(true);
         const today = new Date().toISOString().split('T')[0];
         localStorage.setItem(`attendance_status_${today}`, 'timed-in');
@@ -119,7 +159,6 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
 
       toast.success(`SUCCESS: ${statusLabel} recorded.${isOvertime ? ' (Overtime)' : ''}`);
       setShowScanner(false);
-
       if (attendanceType === 'time-out') setDailyTask('');
 
     } catch (error) {
@@ -132,25 +171,15 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
 
   const startScanning = () => {
     if (!isNetworkAuthorized) return toast.error('NETWORK NOT AUTHORIZED');
-
     if (attendanceType === 'time-in') {
-      if (attendanceStatus === 'timed-in' || attendanceStatus === 'completed') {
+      if (attendanceStatus === 'timed-in' || attendanceStatus === 'completed')
         return toast.error('ALREADY TIMED IN: You can only Time In once per day.');
-      }
     }
-
     if (attendanceType === 'time-out') {
-      if (attendanceStatus === 'none') {
-        return toast.error('ACTION DENIED: You must Time In first.');
-      }
-      if (attendanceStatus === 'completed') {
-        return toast.error('ALREADY COMPLETED: You have already Timed Out for today.');
-      }
-      if (!dailyTask.trim()) {
-        return toast.error('Task accomplishment is required for Time Out.');
-      }
+      if (attendanceStatus === 'none')      return toast.error('ACTION DENIED: You must Time In first.');
+      if (attendanceStatus === 'completed') return toast.error('ALREADY COMPLETED: You have already Timed Out for today.');
+      if (!dailyTask.trim())                return toast.error('Task accomplishment is required for Time Out.');
     }
-
     setShowScanner(true);
   };
 
@@ -177,7 +206,6 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
           </button>
           <h1 className="text-xl font-black tracking-tighter text-cyan-400 font-mono">STUDENT PORTAL</h1>
           <div className="flex items-center gap-2">
-            {/* History button */}
             <button
               onClick={onViewHistory}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-cyan-500/10 border border-white/10 hover:border-cyan-500/30 transition-all"
@@ -196,7 +224,7 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
         <NetworkDetector officeSSID={officeSSID} onNetworkDetected={handleNetworkDetected} />
 
         {/* Step indicators */}
-        <div className="flex justify-center gap-2">
+        <div className="flex justify-center gap-2 flex-wrap">
           <div className={`px-3 py-1 rounded-full text-[10px] font-mono border transition-all ${
             attendanceStatus !== 'none' ? 'bg-cyan-500/20 border-cyan-500 text-cyan-400' : 'bg-gray-800 border-gray-700 text-gray-500'
           }`}>
@@ -207,7 +235,6 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
           }`}>
             STEP 2: TIME OUT {attendanceStatus === 'completed' && '✓'}
           </div>
-          {/* Show overtime badge if active */}
           {isOvertime && (
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
@@ -248,22 +275,102 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
           {!showScanner ? (
             <div className="space-y-6">
 
-              {/* Student identity */}
-              <div className="bg-black/50 border border-gray-800 rounded-xl px-4 py-3 flex items-center gap-3">
-                <div className="p-2 bg-cyan-500/10 rounded-lg border border-cyan-500/20">
-                  <UserCircle size={16} className="text-cyan-400" />
+              {/* ── Student identity card ──────────────────────── */}
+              <div className="bg-black/50 border border-gray-800 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-cyan-500/10 rounded-lg border border-cyan-500/20">
+                    <UserCircle size={16} className="text-cyan-400" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-mono text-gray-500 uppercase">Logged in as</p>
+                    <p className="text-sm font-bold font-mono text-white">{student?.full_name}</p>
+                  </div>
+                  <div className="ml-auto flex items-center gap-2">
+                    <div className="px-2 py-1 bg-gray-800 rounded-lg border border-gray-700">
+                      <p className="text-[10px] font-mono text-gray-500">
+                        Code: <span className="text-cyan-400">{student?.student_code}</span>
+                      </p>
+                    </div>
+                    {/* 🔑 Change Password button — matches AdminPanel pencil pattern */}
+                    {!isEditingPassword && (
+                      <button
+                        onClick={() => setIsEditingPassword(true)}
+                        title="Change Password"
+                        className="p-2 bg-gray-800 hover:bg-purple-500/20 border border-gray-700 hover:border-purple-500/40 rounded-lg transition-all"
+                      >
+                        <KeyRound size={13} className="text-gray-400" />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <p className="text-[10px] font-mono text-gray-500 uppercase">Logged in as</p>
-                  <p className="text-sm font-bold font-mono text-white">{student?.full_name}</p>
-                </div>
-                <div className="ml-auto px-2 py-1 bg-gray-800 rounded-lg border border-gray-700">
-                  <p className="text-[10px] font-mono text-gray-500">Code: <span className="text-cyan-400">{student?.student_code}</span></p>
-                </div>
+
+                {/* ── Inline password form (animated expand) ────── */}
+                <AnimatePresence>
+                  {isEditingPassword && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="mt-4 pt-4 border-t border-gray-800 space-y-3">
+                        <p className="text-[10px] font-mono text-purple-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <KeyRound size={10} /> Change Password
+                        </p>
+
+                        {[
+                          { key: 'current', label: 'Current Password'    },
+                          { key: 'newPass', label: 'New Password'         },
+                          { key: 'confirm', label: 'Confirm New Password' },
+                        ].map(({ key, label }) => (
+                          <div key={key} className="relative">
+                            <input
+                              type={showPasswords[key] ? 'text' : 'password'}
+                              value={passwordForm[key]}
+                              onChange={(e) =>
+                                setPasswordForm(prev => ({ ...prev, [key]: e.target.value }))
+                              }
+                              placeholder={label}
+                              autoComplete="new-password"
+                              className="w-full bg-black border border-gray-700 focus:border-purple-500 rounded-xl px-4 py-2.5 font-mono text-xs outline-none pr-10 text-white placeholder-gray-600 transition-colors"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter')  handleChangePassword();
+                                if (e.key === 'Escape') cancelPasswordEdit();
+                              }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => toggleShowPassword(key)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400 transition-colors"
+                            >
+                              {showPasswords[key] ? <EyeOff size={13} /> : <Eye size={13} />}
+                            </button>
+                          </div>
+                        ))}
+
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            onClick={handleChangePassword}
+                            disabled={savingPassword}
+                            className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-xl font-bold font-mono text-xs transition-all"
+                          >
+                            <Check size={13} />
+                            {savingPassword ? 'SAVING...' : 'SAVE'}
+                          </button>
+                          <button
+                            onClick={cancelPasswordEdit}
+                            className="flex items-center gap-1.5 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-xl font-mono text-xs transition-all"
+                          >
+                            <X size={13} /> CANCEL
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
 
               {/* ── OVERTIME TOGGLE ─────────────────────────────── */}
-              {/* Only shown on Time In and when not yet timed in */}
               <AnimatePresence>
                 {attendanceType === 'time-in' && attendanceStatus === 'none' && (
                   <motion.div
@@ -280,16 +387,12 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <div className={`p-2 rounded-lg border transition-all ${
-                          isOvertime
-                            ? 'bg-yellow-500/20 border-yellow-500/50'
-                            : 'bg-gray-800 border-gray-700'
+                          isOvertime ? 'bg-yellow-500/20 border-yellow-500/50' : 'bg-gray-800 border-gray-700'
                         }`}>
                           <Clock size={16} className={isOvertime ? 'text-yellow-400' : 'text-gray-500'} />
                         </div>
                         <div>
-                          <p className={`text-sm font-bold font-mono transition-colors ${
-                            isOvertime ? 'text-yellow-400' : 'text-gray-400'
-                          }`}>
+                          <p className={`text-sm font-bold font-mono transition-colors ${isOvertime ? 'text-yellow-400' : 'text-gray-400'}`}>
                             OVERTIME
                           </p>
                           <p className="text-[10px] font-mono text-gray-600 mt-0.5">
@@ -299,11 +402,7 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
                           </p>
                         </div>
                       </div>
-
-                      {/* Toggle switch */}
-                      <div className={`relative w-11 h-6 rounded-full transition-all duration-300 ${
-                        isOvertime ? 'bg-yellow-500' : 'bg-gray-700'
-                      }`}>
+                      <div className={`relative w-11 h-6 rounded-full transition-all duration-300 ${isOvertime ? 'bg-yellow-500' : 'bg-gray-700'}`}>
                         <motion.div
                           animate={{ x: isOvertime ? 20 : 2 }}
                           transition={{ type: 'spring', stiffness: 500, damping: 30 }}
@@ -311,7 +410,6 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
                         />
                       </div>
                     </div>
-
                     {isOvertime && (
                       <motion.p
                         initial={{ opacity: 0 }}
@@ -325,7 +423,7 @@ export function StudentPage({ student, officeSSID: propSSID, onBack, onViewHisto
                 )}
               </AnimatePresence>
 
-              {/* Show locked overtime badge after Time In */}
+              {/* Locked overtime badge */}
               {isOvertimeLocked && attendanceStatus === 'timed-in' && (
                 <div className="flex items-center gap-2 px-4 py-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl">
                   <Clock size={14} className="text-yellow-400" />

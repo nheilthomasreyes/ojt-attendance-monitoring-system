@@ -1,5 +1,5 @@
 // ============================================================
-//  AttendanceCard.js — UPDATED: Admin inline edit support
+//  AttendanceCard.js — FIXED: optimistic UI update after save
 // ============================================================
 
 import { useState } from 'react';
@@ -9,53 +9,67 @@ import { toast } from 'sonner';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
+// Convert "08:30 AM" → "08:30" for <input type="time">
+const toInputTime = (timeStr) => {
+  if (!timeStr || timeStr === '--:-- --') return '';
+  try {
+    const [time, period] = timeStr.split(' ');
+    let [h, m] = time.split(':').map(Number);
+    if (period === 'PM' && h !== 12) h += 12;
+    if (period === 'AM' && h === 12) h = 0;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  } catch { return ''; }
+};
+
+// Convert "08:30" → "08:30 AM" for display
+const toDisplayTime = (inputTime) => {
+  if (!inputTime) return '--:-- --';
+  try {
+    const [h, m] = inputTime.split(':').map(Number);
+    const period = h >= 12 ? 'PM' : 'AM';
+    const hour12 = h % 12 || 12;
+    return `${String(hour12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
+  } catch { return '--:-- --'; }
+};
+
 export function AttendanceCard({ record, index, onRecordUpdated }) {
-  const hasTimeIn  = !!record.timeIn  && record.timeIn  !== '--:-- --';
-  const hasTimeOut = !!record.timeOut && record.timeOut !== '--:-- --';
-  const isOT       = record.is_overtime;
+  // ── Local display state (optimistically updated on save) ──
+  const [displayed, setDisplayed] = useState({
+    timeIn:             record.timeIn             || '--:-- --',
+    timeOut:            record.timeOut            || '--:-- --',
+    task_accomplishment: record.task_accomplishment || 'No task reported',
+    is_overtime:        !!record.is_overtime,
+  });
+
+  const isOT     = displayed.is_overtime;
+  const hasTimeIn  = !!displayed.timeIn  && displayed.timeIn  !== '--:-- --';
+  const hasTimeOut = !!displayed.timeOut && displayed.timeOut !== '--:-- --';
   const hasHours   = hasTimeIn && hasTimeOut && parseFloat(record.totalHours) > 0;
 
-  // ── Edit state ────────────────────────────────────────
-  const [isEditing, setIsEditing]   = useState(false);
-  const [saving, setSaving]         = useState(false);
+  // ── Edit state ─────────────────────────────────────────
+  const [isEditing, setIsEditing] = useState(false);
+  const [saving, setSaving]       = useState(false);
 
-  // Convert "08:30 AM" → "08:30" for time input
-  const toInputTime = (timeStr) => {
-    if (!timeStr || timeStr === '--:-- --') return '';
-    try {
-      const [time, period] = timeStr.split(' ');
-      let [h, m] = time.split(':').map(Number);
-      if (period === 'PM' && h !== 12) h += 12;
-      if (period === 'AM' && h === 12) h = 0;
-      return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-    } catch { return ''; }
-  };
-
-  const [editTimeIn,   setEditTimeIn]   = useState(toInputTime(record.timeIn));
-  const [editTimeOut,  setEditTimeOut]  = useState(toInputTime(record.timeOut));
-  const [editTask,     setEditTask]     = useState(record.task_accomplishment || '');
-  const [editOvertime, setEditOvertime] = useState(!!isOT);
+  const [editTimeIn,   setEditTimeIn]   = useState(toInputTime(displayed.timeIn));
+  const [editTimeOut,  setEditTimeOut]  = useState(toInputTime(displayed.timeOut));
+  const [editTask,     setEditTask]     = useState(displayed.task_accomplishment);
+  const [editOvertime, setEditOvertime] = useState(isOT);
 
   const handleSave = async () => {
     setSaving(true);
     try {
       const token = localStorage.getItem('ojt_token');
 
-      // Extract YYYY-MM-DD from rawDate (Date object) or fallback to record.date string
       let date;
       if (record.rawDate instanceof Date) {
         const d = record.rawDate;
-        date = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       } else {
         date = new Date(record.rawDate || record.date).toISOString().split('T')[0];
       }
 
-      // Get student_id from record
       const student_id = record.studentId || record.student_id;
-      if (!student_id) {
-        console.error('Record missing studentId:', record);
-        throw new Error('Student ID not found on record.');
-      }
+      if (!student_id) throw new Error('Student ID not found on record.');
 
       const res  = await fetch(`${API}/api/attendance/${date}/student/${student_id}`, {
         method:  'PUT',
@@ -74,9 +88,20 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
       const data = await res.json();
       if (!data.success) throw new Error(data.message);
 
+      // ── Optimistically update displayed values ─────────
+      // This makes the card reflect the edit immediately
+      // without needing a full page re-fetch
+      setDisplayed({
+        timeIn:              editTimeIn  ? toDisplayTime(editTimeIn)  : '--:-- --',
+        timeOut:             editTimeOut ? toDisplayTime(editTimeOut) : '--:-- --',
+        task_accomplishment: editTask?.trim() || 'No task reported',
+        is_overtime:         editOvertime,
+      });
+
       toast.success('Record updated successfully.');
       setIsEditing(false);
-      if (onRecordUpdated) onRecordUpdated(); // trigger re-fetch in AdminPanel
+      if (onRecordUpdated) onRecordUpdated();
+
     } catch (err) {
       toast.error(err.message || 'Failed to update record.');
     } finally {
@@ -85,11 +110,11 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
   };
 
   const handleCancel = () => {
-    // Reset to original values
-    setEditTimeIn(toInputTime(record.timeIn));
-    setEditTimeOut(toInputTime(record.timeOut));
-    setEditTask(record.task_accomplishment || '');
-    setEditOvertime(!!isOT);
+    // Reset edit fields back to current displayed values
+    setEditTimeIn(toInputTime(displayed.timeIn));
+    setEditTimeOut(toInputTime(displayed.timeOut));
+    setEditTask(displayed.task_accomplishment);
+    setEditOvertime(displayed.is_overtime);
     setIsEditing(false);
   };
 
@@ -107,9 +132,8 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
       }`} />
 
       <div className="relative bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl border border-gray-700 hover:border-cyan-500/50 transition-all overflow-hidden">
-
-        {/* ── View Mode ─────────────────────────────────── */}
         <div className="p-4">
+
           {/* Header */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 pb-3 border-b border-gray-700/50 gap-2">
             <div className="flex items-center gap-2">
@@ -128,13 +152,12 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              {isOT && (
+              {isOT ? (
                 <div className="flex items-center gap-1 px-2 py-1 bg-yellow-500/20 rounded-md border border-yellow-500/40">
                   <Clock className="size-3 text-yellow-400" />
                   <span className="text-[10px] font-bold text-yellow-400 uppercase">Overtime</span>
                 </div>
-              )}
-              {!isOT && (
+              ) : (
                 <div className="flex items-center gap-1 px-2 py-1 bg-yellow-500/10 rounded-md border border-yellow-500/20">
                   <Zap className="size-3 text-yellow-500" />
                   <span className="text-[10px] font-bold text-yellow-500 uppercase">Daily Session</span>
@@ -149,7 +172,6 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
                   <span className="text-[10px] font-bold font-mono uppercase">{record.totalHours} hrs</span>
                 </div>
               )}
-              {/* Edit button — always visible */}
               <button
                 onClick={() => setIsEditing(true)}
                 className="flex items-center gap-1 px-2 py-1 bg-gray-700 hover:bg-purple-500/20 border border-gray-600 hover:border-purple-500/40 rounded-md transition-all"
@@ -161,7 +183,7 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
             </div>
           </div>
 
-          {/* Times Grid — view mode */}
+          {/* ── View Mode ─────────────────────────────────── */}
           {!isEditing && (
             <>
               <div className="grid grid-cols-2 gap-3 mb-4">
@@ -171,10 +193,14 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
                     <span className="text-[10px] font-mono uppercase text-gray-500">Time In</span>
                   </div>
                   <div className={`text-sm font-black font-mono ${hasTimeIn ? 'text-cyan-400' : 'text-gray-400'}`}>
-                    {record.timeIn || '--:-- --'}
+                    {displayed.timeIn}
                   </div>
                 </div>
-                <div className={`p-3 rounded-lg border ${hasTimeOut ? isOT ? 'bg-yellow-500/5 border-yellow-500/20' : 'bg-orange-500/5 border-orange-500/20' : 'bg-gray-800/50 border-gray-700'}`}>
+                <div className={`p-3 rounded-lg border ${
+                  hasTimeOut
+                    ? isOT ? 'bg-yellow-500/5 border-yellow-500/20' : 'bg-orange-500/5 border-orange-500/20'
+                    : 'bg-gray-800/50 border-gray-700'
+                }`}>
                   <div className="flex items-center gap-2 mb-1">
                     <LogOut className={`size-3 ${hasTimeOut ? isOT ? 'text-yellow-400' : 'text-orange-400' : 'text-gray-600'}`} />
                     <span className="text-[10px] font-mono uppercase text-gray-500">
@@ -182,7 +208,7 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
                     </span>
                   </div>
                   <div className={`text-sm font-black font-mono ${hasTimeOut ? isOT ? 'text-yellow-400' : 'text-orange-400' : 'text-gray-400'}`}>
-                    {record.timeOut || '--:-- --'}
+                    {displayed.timeOut}
                   </div>
                   {isOT && hasTimeOut && (
                     <p className="text-[9px] font-mono text-yellow-600 mt-0.5">overtime — no 5PM cap</p>
@@ -196,13 +222,13 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
                   <span className="text-[10px] font-mono uppercase text-gray-500">Task Accomplishment</span>
                 </div>
                 <p className="text-xs text-gray-300 leading-relaxed italic">
-                  "{record.task_accomplishment || 'No task reported'}"
+                  "{displayed.task_accomplishment}"
                 </p>
               </div>
             </>
           )}
 
-          {/* ── Edit Mode ─────────────────────────────── */}
+          {/* ── Edit Mode ─────────────────────────────────── */}
           <AnimatePresence>
             {isEditing && (
               <motion.div
@@ -211,7 +237,6 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
                 exit={{ opacity: 0, y: -8 }}
                 className="space-y-4 mt-2"
               >
-                {/* Time In + Time Out */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-[10px] font-mono text-gray-500 uppercase flex items-center gap-1 mb-1">
@@ -237,7 +262,6 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
                   </div>
                 </div>
 
-                {/* Task */}
                 <div>
                   <label className="text-[10px] font-mono text-gray-500 uppercase flex items-center gap-1 mb-1">
                     <ClipboardList size={10} className="text-purple-400" /> Task Accomplishment
@@ -250,7 +274,6 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
                   />
                 </div>
 
-                {/* Overtime toggle */}
                 <div
                   onClick={() => setEditOvertime(p => !p)}
                   className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${
@@ -272,7 +295,6 @@ export function AttendanceCard({ record, index, onRecordUpdated }) {
                   </div>
                 </div>
 
-                {/* Save / Cancel */}
                 <div className="flex gap-2">
                   <button
                     onClick={handleSave}
