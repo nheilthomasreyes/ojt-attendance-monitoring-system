@@ -5,13 +5,10 @@ import { Eye, EyeOff, UserPlus, LogIn, Copy, Check, ArrowLeft, Shield, User } fr
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
-// ── helpers ────────────────────────────────────────────
 const isAdminInput = (val) => val.includes('@');
 
-// ── sub-views ──────────────────────────────────────────
-
 function EnrollForm({ onBack, onEnrolled }) {
-  const [form, setForm]     = useState({ full_name: '', email: '', password: '' });
+  const [form, setForm]       = useState({ full_name: '', email: '', password: '' });
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
 
@@ -58,7 +55,6 @@ function EnrollForm({ onBack, onEnrolled }) {
         <p className="text-gray-500 text-xs font-mono mt-1">Register to receive your unique login code</p>
       </div>
 
-      {/* Full Name */}
       <div className="space-y-1.5">
         <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Full Name</label>
         <input
@@ -70,7 +66,6 @@ function EnrollForm({ onBack, onEnrolled }) {
         />
       </div>
 
-      {/* Email */}
       <div className="space-y-1.5">
         <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Email Address</label>
         <input
@@ -83,7 +78,6 @@ function EnrollForm({ onBack, onEnrolled }) {
         />
       </div>
 
-      {/* Password */}
       <div className="space-y-1.5">
         <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Password</label>
         <div className="relative">
@@ -108,11 +102,7 @@ function EnrollForm({ onBack, onEnrolled }) {
         whileTap={{ scale: 0.98 }}
         className="w-full py-3.5 bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-black font-mono rounded-xl text-sm flex items-center justify-center gap-2 disabled:opacity-50"
       >
-        {loading ? (
-          <span className="animate-pulse">ENROLLING...</span>
-        ) : (
-          <><UserPlus size={16} /> ENROLL NOW</>
-        )}
+        {loading ? <span className="animate-pulse">ENROLLING...</span> : <><UserPlus size={16} /> ENROLL NOW</>}
       </motion.button>
     </motion.div>
   );
@@ -183,19 +173,16 @@ function CodeReveal({ code, name, onDone }) {
   );
 }
 
-// ── Main Login Page ─────────────────────────────────────
 export default function LoginPage({ onAdminLogin, onStudentLogin }) {
-  const [view, setView]         = useState('login');   // 'login' | 'enroll' | 'code'
+  const [view, setView]                 = useState('login');
   const [enrolledCode, setEnrolledCode] = useState('');
   const [enrolledName, setEnrolledName] = useState('');
 
-  // Login form state
-  const [identifier, setIdentifier] = useState('');   // email (admin) or 5-digit code (student)
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword]     = useState('');
-  const [showPass, setShowPass]      = useState(false);
-  const [loading, setLoading]        = useState(false);
+  const [showPass, setShowPass]     = useState(false);
+  const [loading, setLoading]       = useState(false);
 
-  // Detect type from input
   const inputType = identifier.trim() === '' ? 'unknown'
     : isAdminInput(identifier) ? 'admin' : 'student';
 
@@ -207,7 +194,6 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
     setLoading(true);
     try {
       if (inputType === 'admin') {
-        // Admin login
         const res  = await fetch(`${API}/api/admin/login`, {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -221,7 +207,6 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
         onAdminLogin(data.token, data.admin);
 
       } else {
-        // Student login
         if (!/^\d{5}$/.test(identifier.trim())) {
           throw new Error('Student code must be exactly 5 digits.');
         }
@@ -236,7 +221,11 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
         localStorage.setItem('ojt_role', 'student');
         localStorage.setItem('ojt_student', JSON.stringify(data.student));
         toast.success(`Welcome, ${data.student.full_name}!`);
-        onStudentLogin(data.token, data.student);
+
+        // ✅ FIXED: Pass data.expiresAt as third argument so App.js can
+        //    schedule the midnight auto-logout timer correctly.
+        //    Previously this was omitted, so the timer never fired.
+        onStudentLogin(data.token, data.student, data.expiresAt);
       }
     } catch (err) {
       toast.error(err.message);
@@ -260,15 +249,12 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4 relative overflow-hidden">
       <Toaster position="top-center" richColors />
 
-      {/* Background grid */}
       <div className="fixed inset-0 opacity-[0.07] pointer-events-none"
         style={{
           backgroundImage: `linear-gradient(rgba(6,182,212,1) 1px, transparent 1px), linear-gradient(90deg, rgba(6,182,212,1) 1px, transparent 1px)`,
           backgroundSize: '40px 40px'
         }}
       />
-
-      {/* Ambient glow */}
       <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-cyan-500/10 blur-[120px] rounded-full pointer-events-none" />
 
       <motion.div
@@ -276,7 +262,6 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
         animate={{ opacity: 1, y: 0 }}
         className="relative z-10 w-full max-w-sm"
       >
-        {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 border border-gray-800 rounded-full mb-4">
             <div className="size-2 bg-green-400 rounded-full animate-pulse" />
@@ -288,14 +273,11 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
           <p className="text-gray-600 text-xs font-mono mt-1 uppercase tracking-widest">Attendance Monitoring</p>
         </div>
 
-        {/* Card */}
         <div className="bg-gray-900 border border-gray-800 rounded-3xl p-8 shadow-2xl shadow-black/50 overflow-hidden relative">
-          {/* Top accent line */}
           <div className="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-cyan-500/50 to-transparent" />
 
           <AnimatePresence mode="wait">
 
-            {/* ── LOGIN VIEW ── */}
             {view === 'login' && (
               <motion.div
                 key="login"
@@ -309,13 +291,11 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
                   <p className="text-gray-600 text-xs font-mono mt-1">Admin: use email · Student: use 5-digit code</p>
                 </div>
 
-                {/* Identifier input */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">
                       Email or Student Code
                     </label>
-                    {/* Live type indicator */}
                     {inputType !== 'unknown' && (
                       <motion.div
                         initial={{ opacity: 0, scale: 0.8 }}
@@ -337,14 +317,13 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
                     onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
                     placeholder="admin@email.com or 12345"
                     className={`w-full bg-gray-950 border rounded-xl px-4 py-3 text-sm font-mono text-white outline-none transition-colors placeholder-gray-700 ${
-                      inputType === 'admin' ? 'focus:border-purple-500 border-gray-800'
+                      inputType === 'admin'   ? 'focus:border-purple-500 border-gray-800'
                       : inputType === 'student' ? 'focus:border-cyan-500 border-gray-800'
                       : 'border-gray-800 focus:border-gray-600'
                     }`}
                   />
                 </div>
 
-                {/* Password */}
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Password</label>
                   <div className="relative">
@@ -362,7 +341,6 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
                   </div>
                 </div>
 
-                {/* Login button */}
                 <motion.button
                   onClick={handleLogin}
                   disabled={loading}
@@ -378,14 +356,12 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
                     : <><LogIn size={16} /> SIGN IN</>}
                 </motion.button>
 
-                {/* Divider */}
                 <div className="flex items-center gap-3">
                   <div className="flex-1 h-px bg-gray-800" />
                   <span className="text-[10px] font-mono text-gray-700">STUDENT?</span>
                   <div className="flex-1 h-px bg-gray-800" />
                 </div>
 
-                {/* Enroll button */}
                 <button
                   onClick={() => setView('enroll')}
                   className="w-full py-3 border-2 border-dashed border-gray-800 hover:border-cyan-500/50 text-gray-500 hover:text-cyan-400 font-mono font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition-all"
@@ -395,12 +371,10 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
               </motion.div>
             )}
 
-            {/* ── ENROLL VIEW ── */}
             {view === 'enroll' && (
               <EnrollForm onBack={() => setView('login')} onEnrolled={handleEnrolled} />
             )}
 
-            {/* ── CODE REVEAL VIEW ── */}
             {view === 'code' && (
               <CodeReveal code={enrolledCode} name={enrolledName} onDone={handleCodeDone} />
             )}
@@ -408,7 +382,6 @@ export default function LoginPage({ onAdminLogin, onStudentLogin }) {
           </AnimatePresence>
         </div>
 
-        {/* Footer */}
         <p className="text-center text-[10px] font-mono text-gray-700 mt-6 uppercase tracking-widest">
           BatStateU · MTCC · OJT System
         </p>

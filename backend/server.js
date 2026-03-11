@@ -23,7 +23,7 @@ app.set('trust proxy', true);
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
-  `http://${process.env.HOST_IP || '192.168.0.127'}:3000`,
+  `http://${process.env.HOST_IP || '192.168.0.226'}:3000`, 
 ];
 
 app.use(cors({
@@ -62,5 +62,5 @@ app.use((req, res) => {
 // '0.0.0.0' allows phones on the same WiFi to reach the backend
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 OJT Backend running on http://localhost:${PORT}`);
-  console.log(`📱 Network access: http://192.168.0.127:${PORT}`);
+  console.log(`📱 Network access: http://192.168.0.226:${PORT}`);
 });

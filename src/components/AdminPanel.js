@@ -16,7 +16,14 @@ const ITEMS_PER_PAGE = 5;
 export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
   const [qrCodeUrl, setQrCodeUrl] = useState('');
   const [isEditingSSID, setIsEditingSSID] = useState(false);
-  const [tempSSID, setTempSSID] = useState(officeSSID);
+  const [tempSSID, setTempSSID]           = useState(officeSSID);
+
+  // ✅ FIXED: Sync tempSSID whenever the prop updates.
+  // officeSSID is fetched async in App.js — without this, the edit
+  // input would always pre-fill with the stale default value.
+  useEffect(() => {
+    setTempSSID(officeSSID);
+  }, [officeSSID]);
   
   const [selectedName, setSelectedName] = useState('all');
   const [selectedMonth, setSelectedMonth] = useState(''); 
@@ -24,12 +31,17 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [showPrintView, setShowPrintView] = useState(false);
 
-  // ── Students list with required hours ────────────────
-  const [students, setStudents]               = useState([]);
-  const [editingHoursId, setEditingHoursId]   = useState(null);
-  const [hoursInput, setHoursInput]           = useState('');
-  const [savingHours, setSavingHours]         = useState(false);
-  const [activeTab, setActiveTab]             = useState('records');
+  const [students, setStudents]             = useState([]);
+  const [editingHoursId, setEditingHoursId] = useState(null);
+  const [hoursInput, setHoursInput]         = useState('');
+  const [savingHours, setSavingHours]       = useState(false);
+  const [activeTab, setActiveTab]           = useState('records');
+
+  // Force Time Out state
+  const [forcingTimeOut, setForcingTimeOut] = useState(null); // student id currently being forced
+  const [forceTimeInput, setForceTimeInput] = useState('17:00');
+  const [forceTaskInput, setForceTaskInput] = useState('');
+  const [timedInToday, setTimedInToday]     = useState(new Set()); // student_ids timed-in but not out today
 
   useEffect(() => {
     const fetchStudents = async () => {
@@ -44,6 +56,51 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
     };
     fetchStudents();
   }, []);
+
+  // Compute which students are timed-in but NOT timed-out today
+  // Runs whenever the records prop updates (App.js polls every 30s)
+  useEffect(() => {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+    const timedIn  = new Set();
+    const timedOut = new Set();
+    records.forEach(r => {
+      const recDate = new Date(r.timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+      if (recDate !== today) return;
+      if (r.status === 'Time In')  timedIn.add(String(r.student_id));
+      if (r.status === 'Time Out') timedOut.add(String(r.student_id));
+    });
+    // Students who timed in but haven't timed out yet
+    timedOut.forEach(id => timedIn.delete(id));
+    setTimedInToday(timedIn);
+  }, [records]);
+
+  // Force Time Out a student who forgot — calls the PUT route which will INSERT
+  // a Time Out row if none exists for today
+  const handleForceTimeOut = async (student) => {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+    const token = localStorage.getItem('ojt_token');
+    try {
+      const res = await fetch(`${API}/api/attendance/${today}/student/${student.id}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          time_out:            forceTimeInput,
+          task_accomplishment: forceTaskInput.trim() || 'Forced time out by admin',
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(`Timed out ${student.full_name} at ${forceTimeInput}`);
+        setForcingTimeOut(null);
+        setForceTimeInput('17:00');
+        setForceTaskInput('');
+      } else {
+        toast.error(data.message || 'Force time out failed');
+      }
+    } catch (err) {
+      toast.error('Network error during force time out');
+    }
+  };
 
   const handleSaveHours = async (studentId) => {
     const hours = parseFloat(hoursInput);
@@ -68,54 +125,57 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
     setSavingHours(false);
   };
 
-  // --- 1. Grouping Logic & Strict 8AM-5PM Calculation ---
+  // ── Grouping Logic ────────────────────────────────────
   const groupedRecords = useMemo(() => {
     if (!Array.isArray(records)) return [];
     const groups = {};
 
     records.forEach(r => {
-      const rawName = r.name || r.student_name || "UNKNOWN";
-      const cleanName = rawName.trim().toUpperCase(); 
-      
+      const rawName   = r.name || r.student_name || "UNKNOWN";
+      const cleanName = rawName.trim().toUpperCase();
       if (!r.timestamp) return;
 
-      const dateObj = new Date(r.timestamp);
-      const dateString = dateObj.toDateString(); 
-      const groupKey = `${cleanName}-${dateString}`;
+      const dateObj    = new Date(r.timestamp);
+      const dateString = dateObj.toDateString();
+      const groupKey   = `${cleanName}-${dateString}`;
 
       if (!groups[groupKey]) {
         groups[groupKey] = {
-          id: groupKey,
-          student_name: cleanName,
-          studentId: r.studentId || r.student_id,
-          date: dateObj.toLocaleDateString(undefined, { 
-            year: 'numeric', month: 'long', day: 'numeric' 
-          }),
-          timeIn: null,
-          timeOut: null,
-          timeInRaw: null,
-          timeOutRaw: null,
+          id:                  groupKey,
+          student_name:        cleanName,
+          studentId:           r.studentId || r.student_id,
+          date:                dateObj.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }),
+          timeIn:              null,
+          timeOut:             null,
+          timeInRaw:           null,
+          timeOutRaw:          null,
           task_accomplishment: "",
-          rawDate: dateObj,
-          totalHours: 0,
-          is_overtime: false
+          rawDate:             dateObj,
+          totalHours:          0,
+          is_overtime:         false,
         };
       }
 
-      const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const timeStr       = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const currentStatus = (r.status || r.type || "").toLowerCase();
 
       if (currentStatus.includes("in")) {
         groups[groupKey].timeIn    = timeStr;
         groups[groupKey].timeInRaw = dateObj;
-        groups[groupKey].studentId = r.studentId || r.student_id; // always grab from Time In record
+        groups[groupKey].studentId = r.studentId || r.student_id;
         if (r.is_overtime === 1 || r.is_overtime === true) {
           groups[groupKey].is_overtime = true;
         }
-      } 
+        // Fallback: read task from Time In row if not the default placeholder
+        if (r.task_accomplishment && r.task_accomplishment !== "Ongoing...") {
+          groups[groupKey].task_accomplishment = r.task_accomplishment;
+        }
+      }
+
       if (currentStatus.includes("out")) {
-        groups[groupKey].timeOut = timeStr;
+        groups[groupKey].timeOut    = timeStr;
         groups[groupKey].timeOutRaw = dateObj;
+        // Time Out task always wins
         if (r.task_accomplishment && r.task_accomplishment !== "Ongoing...") {
           groups[groupKey].task_accomplishment = r.task_accomplishment;
         }
@@ -127,8 +187,7 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
         const shiftStart = new Date(groups[groupKey].timeInRaw);
         shiftStart.setHours(8, 0, 0, 0);
         const effectiveIn = groups[groupKey].timeInRaw < shiftStart
-          ? shiftStart
-          : groups[groupKey].timeInRaw;
+          ? shiftStart : groups[groupKey].timeInRaw;
 
         let effectiveOut;
         if (isOT) {
@@ -137,11 +196,10 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
           const shiftEnd = new Date(groups[groupKey].timeInRaw);
           shiftEnd.setHours(17, 0, 0, 0);
           effectiveOut = groups[groupKey].timeOutRaw > shiftEnd
-            ? shiftEnd
-            : groups[groupKey].timeOutRaw;
+            ? shiftEnd : groups[groupKey].timeOutRaw;
         }
 
-        const diffInMs = effectiveOut - effectiveIn;
+        const diffInMs   = effectiveOut - effectiveIn;
         let decimalHours = diffInMs > 0 ? diffInMs / (1000 * 60 * 60) : 0;
         if (decimalHours > 5) decimalHours -= 1;
         groups[groupKey].totalHours = Math.max(0, decimalHours).toFixed(2);
@@ -150,21 +208,21 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
 
     return Object.values(groups).map(g => ({
       ...g,
-      timeIn: g.timeIn || "--:-- --",
-      timeOut: g.timeOut || "--:-- --",
-      task_accomplishment: g.task_accomplishment || "No task reported"
+      timeIn:              g.timeIn  || "--:-- --",
+      timeOut:             g.timeOut || "--:-- --",
+      task_accomplishment: g.task_accomplishment || "No task reported",
     })).sort((a, b) => b.rawDate - a.rawDate);
   }, [records]);
 
-  // --- 2. Filter Logic ---
+  // ── Filter Logic ──────────────────────────────────────
   const handleApplyFilter = useCallback(() => {
     setCurrentPage(1);
     const filtered = groupedRecords.filter(r => {
       const matchesName = selectedName === 'all' || r.student_name === selectedName;
-      let matchesMonth = true;
+      let matchesMonth  = true;
       if (selectedMonth) {
         const [year, month] = selectedMonth.split('-');
-        matchesMonth = r.rawDate.getFullYear() === parseInt(year) && 
+        matchesMonth = r.rawDate.getFullYear() === parseInt(year) &&
                        (r.rawDate.getMonth() + 1) === parseInt(month);
       }
       return matchesName && matchesMonth;
@@ -185,23 +243,23 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
     return appliedRecords.reduce((sum, r) => sum + parseFloat(r.totalHours || 0), 0).toFixed(2);
   }, [appliedRecords]);
 
-  // --- 3. Pagination ---
-  const totalPages = Math.ceil(appliedRecords.length / ITEMS_PER_PAGE);
+  // ── Pagination ────────────────────────────────────────
+  const totalPages       = Math.ceil(appliedRecords.length / ITEMS_PER_PAGE);
   const paginatedRecords = appliedRecords.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
-  // --- 4. Export ---
+  // ── Export ────────────────────────────────────────────
   const handleExportExcel = () => {
     if (appliedRecords.length === 0) return alert("No records to export.");
     const exportData = appliedRecords.map(r => ({
       'STUDENT NAME': r.student_name,
-      'DATE': r.date,
-      'TIME IN': r.timeIn,
-      'TIME OUT': r.timeOut,
-      'HOURS': r.totalHours,
-      'TASK': r.task_accomplishment
+      'DATE':         r.date,
+      'TIME IN':      r.timeIn,
+      'TIME OUT':     r.timeOut,
+      'HOURS':        r.totalHours,
+      'TASK':         r.task_accomplishment,
     }));
     const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
+    const workbook  = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Attendance");
     XLSX.writeFile(workbook, `OJT_Report_${selectedName}.xlsx`);
   };
@@ -209,14 +267,16 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
   const generateStaticQR = useCallback(async () => {
     try {
       const qrData = JSON.stringify({ sessionId: PERMANENT_SESSION_ID, type: 'attendance_qr' });
-      const url = await QRCode.toDataURL(qrData, { width: 1000, margin: 2 });
+      const url    = await QRCode.toDataURL(qrData, { width: 1000, margin: 2 });
       setQrCodeUrl(url);
     } catch (e) { console.error(e); }
   }, []);
 
   useEffect(() => { generateStaticQR(); }, [generateStaticQR]);
 
-  const todayCount = records.filter(r => new Date(r.timestamp).toDateString() === new Date().toDateString()).length;
+  const todayCount = records.filter(r =>
+    new Date(r.timestamp).toDateString() === new Date().toDateString()
+  ).length;
 
   return (
     <div className="w-full max-w-7xl mx-auto space-y-6 p-4 md:p-6 text-slate-100">
@@ -239,26 +299,26 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
       {/* Total Hours Summary */}
       {selectedName !== 'all' && (
         <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="bg-cyan-600 p-6 rounded-2xl flex justify-between items-center shadow-xl shadow-cyan-900/20">
-            <div className="flex items-center gap-4">
-                <div className="p-3 bg-white/20 rounded-xl"><Clock className="text-white" /></div>
-                <div>
-                    <p className="text-xs font-mono text-cyan-100 uppercase tracking-widest">Accumulated Working Hours</p>
-                    <h2 className="text-2xl font-black">{selectedName}</h2>
-                </div>
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-white/20 rounded-xl"><Clock className="text-white" /></div>
+            <div>
+              <p className="text-xs font-mono text-cyan-100 uppercase tracking-widest">Accumulated Working Hours</p>
+              <h2 className="text-2xl font-black">{selectedName}</h2>
             </div>
-            <div className="text-right">
-                <p className="text-4xl font-black leading-none">{grandTotalHours}</p>
-                <p className="text-[10px] font-mono text-cyan-100 uppercase mt-1">Total Hours</p>
-            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-4xl font-black leading-none">{grandTotalHours}</p>
+            <p className="text-[10px] font-mono text-cyan-100 uppercase mt-1">Total Hours</p>
+          </div>
         </motion.div>
       )}
 
       {/* Stats Bar */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {[
-          { label: 'Total Logs', value: records.length, icon: Database, color: 'from-blue-600/20' },
-          { label: 'Today Activity', value: todayCount, icon: Activity, color: 'from-green-600/20' },
-          { label: 'Total Filtered Hours', value: grandTotalHours, icon: Clock, color: 'from-cyan-600/20' },
+          { label: 'Total Logs',           value: records.length, icon: Database, color: 'from-blue-600/20'  },
+          { label: 'Today Activity',       value: todayCount,     icon: Activity, color: 'from-green-600/20' },
+          { label: 'Total Filtered Hours', value: grandTotalHours, icon: Clock,   color: 'from-cyan-600/20'  },
         ].map((stat, idx) => (
           <div key={idx} className={`bg-gradient-to-br ${stat.color} border border-white/5 rounded-2xl p-6`}>
             <stat.icon className="size-5 mb-4 text-slate-400" />
@@ -270,7 +330,10 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
 
       {/* Network Config */}
       <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex flex-col sm:flex-row gap-4 items-center">
-        <div className="flex items-center gap-3"><Wifi className="size-4 text-cyan-500" /> <span className="text-xs font-mono text-slate-400 uppercase">Restriction:</span></div>
+        <div className="flex items-center gap-3">
+          <Wifi className="size-4 text-cyan-500" />
+          <span className="text-xs font-mono text-slate-400 uppercase">Restriction:</span>
+        </div>
         {isEditingSSID ? (
           <div className="flex gap-2 w-full">
             <input type="text" value={tempSSID} onChange={(e) => setTempSSID(e.target.value)} className="flex-1 px-4 py-2 bg-black border border-cyan-500/50 rounded-xl outline-none font-mono text-sm" />
@@ -325,7 +388,6 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
                     </span>
                   </div>
                 </div>
-                {/* Required Hours Editor */}
                 <div className="flex items-center gap-2">
                   <div className="text-right mr-1">
                     <p className="mono text-[10px] text-slate-500 uppercase">Required Hours</p>
@@ -363,6 +425,53 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
                     </button>
                   )}
                 </div>
+
+                {/* ── Force Time Out button (only shows if student is timed-in but not out today) ── */}
+                {timedInToday.has(String(s.id)) && (
+                  <div className="w-full border-t border-slate-800 pt-3 mt-1">
+                    {forcingTimeOut === s.id ? (
+                      <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+                        <div className="flex items-center gap-2">
+                          <Clock size={14} className="text-orange-400 flex-shrink-0" />
+                          <input
+                            type="time"
+                            value={forceTimeInput}
+                            onChange={e => setForceTimeInput(e.target.value)}
+                            className="px-3 py-1.5 bg-black border border-orange-500/50 rounded-lg mono text-sm outline-none focus:border-orange-400 text-white"
+                          />
+                        </div>
+                        <input
+                          type="text"
+                          value={forceTaskInput}
+                          onChange={e => setForceTaskInput(e.target.value)}
+                          placeholder="Task / reason (optional)"
+                          className="flex-1 px-3 py-1.5 bg-black border border-slate-700 rounded-lg mono text-sm outline-none focus:border-orange-400 text-white placeholder-slate-600"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleForceTimeOut(s)}
+                            className="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-xs transition-all"
+                          >
+                            CONFIRM
+                          </button>
+                          <button
+                            onClick={() => { setForcingTimeOut(null); setForceTimeInput('17:00'); setForceTaskInput(''); }}
+                            className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs transition-all"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setForcingTimeOut(s.id); setForceTimeInput('17:00'); setForceTaskInput(''); }}
+                        className="flex items-center gap-2 px-4 py-2 bg-orange-500/10 border border-orange-500/30 hover:bg-orange-500/20 hover:border-orange-500/60 text-orange-400 rounded-xl font-bold text-xs transition-all"
+                      >
+                        <Clock size={13} /> FORCE TIME OUT
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -399,7 +508,11 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
                     key={record.id}
                     record={record}
                     index={index}
-                    onRecordUpdated={() => window.dispatchEvent(new Event('ojt-refresh'))}
+                    onRecordUpdated={() => {}}
+                    // ✅ FIXED: Removed window.dispatchEvent('ojt-refresh') here.
+                    // That was causing App.js to re-fetch records on every edit,
+                    // which re-triggered groupedRecords → handleApplyFilter → re-render loop.
+                    // AttendanceCard now handles UI updates optimistically via local state.
                   />
                 ))
               )}
@@ -419,18 +532,18 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
       <AnimatePresence>
         {showPrintView && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-white overflow-y-auto p-8 flex flex-col items-center text-black">
-             <button onClick={() => setShowPrintView(false)} className="fixed top-8 right-8 p-3 bg-gray-100 rounded-full print:hidden"><X size={24} /></button>
-             <div className="max-w-2xl w-full text-center space-y-8 py-12 border-[10px] border-black p-12">
-               <h1 className="text-6xl font-black italic">OJT PORTAL</h1>
-               <p className="text-xl font-bold text-gray-400 border-b-2 border-black pb-4 uppercase tracking-[0.3em]">Attendance Gateway</p>
-               {qrCodeUrl && <img src={qrCodeUrl} alt="QR" className="w-80 h-80 mx-auto border-4 border-black p-1 shadow-2xl" />}
-               <div className="space-y-4">
-                 <p className="text-2xl font-black underline">SCAN TO LOGIN/LOGOUT</p>
-                 <div className="bg-gray-100 p-4 rounded-xl font-mono text-lg font-bold uppercase">WIFI: {officeSSID}</div>
-                 <p className="text-sm font-bold text-gray-500 uppercase">Shift Schedule: 08:00 AM - 05:00 PM</p>
-               </div>
-               <button onClick={() => window.print()} className="mt-8 px-10 py-4 bg-black text-white rounded-full font-bold print:hidden hover:scale-105 transition-transform">PRINT NOW</button>
-             </div>
+            <button onClick={() => setShowPrintView(false)} className="fixed top-8 right-8 p-3 bg-gray-100 rounded-full print:hidden"><X size={24} /></button>
+            <div className="max-w-2xl w-full text-center space-y-8 py-12 border-[10px] border-black p-12">
+              <h1 className="text-6xl font-black italic">OJT PORTAL</h1>
+              <p className="text-xl font-bold text-gray-400 border-b-2 border-black pb-4 uppercase tracking-[0.3em]">Attendance Gateway</p>
+              {qrCodeUrl && <img src={qrCodeUrl} alt="QR" className="w-80 h-80 mx-auto border-4 border-black p-1 shadow-2xl" />}
+              <div className="space-y-4">
+                <p className="text-2xl font-black underline">SCAN TO LOGIN/LOGOUT</p>
+                <div className="bg-gray-100 p-4 rounded-xl font-mono text-lg font-bold uppercase">WIFI: {officeSSID}</div>
+                <p className="text-sm font-bold text-gray-500 uppercase">Shift Schedule: 08:00 AM - 05:00 PM</p>
+              </div>
+              <button onClick={() => window.print()} className="mt-8 px-10 py-4 bg-black text-white rounded-full font-bold print:hidden hover:scale-105 transition-transform">PRINT NOW</button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

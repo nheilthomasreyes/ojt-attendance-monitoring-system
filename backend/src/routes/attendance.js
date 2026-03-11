@@ -1,6 +1,10 @@
 // src/routes/attendance.js
-// FIXED: module.exports moved to end of file (was cutting off routes)
-// FIXED: task_accomplishment edit now falls back to Time In row if no Time Out exists
+// FIX NOTES:
+// - db.js has timezone: '+08:00' which sets MySQL session TZ to PH time.
+//   So NOW() stores PH time, and DATE(timestamp) extracts PH date correctly.
+//   DO NOT use CONVERT_TZ — that would double-offset to +16:00.
+// - The only JS-side fix needed: replace new Date().toISOString().split('T')[0]
+//   (which returns UTC date) with getPHToday() (which returns PH date).
 
 const express         = require('express');
 const db              = require('../config/db');
@@ -8,70 +12,58 @@ const { verifyToken } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Returns today's date as "YYYY-MM-DD" in PH time (Asia/Manila / UTC+8).
+// en-CA locale produces YYYY-MM-DD format that MySQL DATE() expects.
+const getPHToday = () =>
+  new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+
 // -------------------------------------------------------
 // POST /api/attendance/log
-// Student scans QR → records Time In or Time Out
 // -------------------------------------------------------
 router.post('/log', async (req, res) => {
   const { student_id, student_name, status, task_accomplishment, is_overtime } = req.body;
 
   if (!student_id || !student_name || !status) {
-    return res.status(400).json({
-      success: false,
-      message: 'student_id, student_name, and status are required.'
-    });
+    return res.status(400).json({ success: false, message: 'student_id, student_name, and status are required.' });
   }
-
   if (!['Time In', 'Time Out'].includes(status)) {
-    return res.status(400).json({
-      success: false,
-      message: 'Status must be "Time In" or "Time Out".'
-    });
+    return res.status(400).json({ success: false, message: 'Status must be "Time In" or "Time Out".' });
   }
 
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getPHToday(); // ✅ PH date, not UTC
 
     if (status === 'Time In') {
       const [existing] = await db.query(
-        `SELECT id FROM attendance_logs 
-         WHERE student_id = ? AND status = 'Time In' 
+        `SELECT id FROM attendance_logs
+         WHERE student_id = ? AND status = 'Time In'
          AND DATE(timestamp) = ? LIMIT 1`,
         [student_id, today]
       );
       if (existing.length > 0) {
-        return res.status(409).json({
-          success: false,
-          message: 'ALREADY TIMED IN: You can only Time In once per day.'
-        });
+        return res.status(409).json({ success: false, message: 'ALREADY TIMED IN: You can only Time In once per day.' });
       }
     }
 
     if (status === 'Time Out') {
       const [timeInRecord] = await db.query(
-        `SELECT id FROM attendance_logs 
-         WHERE student_id = ? AND status = 'Time In' 
+        `SELECT id FROM attendance_logs
+         WHERE student_id = ? AND status = 'Time In'
          AND DATE(timestamp) = ? LIMIT 1`,
         [student_id, today]
       );
       if (timeInRecord.length === 0) {
-        return res.status(409).json({
-          success: false,
-          message: 'ACTION DENIED: You must Time In first.'
-        });
+        return res.status(409).json({ success: false, message: 'ACTION DENIED: You must Time In first.' });
       }
 
       const [existingOut] = await db.query(
-        `SELECT id FROM attendance_logs 
-         WHERE student_id = ? AND status = 'Time Out' 
+        `SELECT id FROM attendance_logs
+         WHERE student_id = ? AND status = 'Time Out'
          AND DATE(timestamp) = ? LIMIT 1`,
         [student_id, today]
       );
       if (existingOut.length > 0) {
-        return res.status(409).json({
-          success: false,
-          message: 'ALREADY COMPLETED: You have already Timed Out for today.'
-        });
+        return res.status(409).json({ success: false, message: 'ALREADY COMPLETED: You have already Timed Out for today.' });
       }
     }
 
@@ -93,22 +85,14 @@ router.post('/log', async (req, res) => {
     }
 
     const [result] = await db.query(
-      `INSERT INTO attendance_logs 
-        (student_id, student_name, status, task_accomplishment, is_overtime, timestamp)
+      `INSERT INTO attendance_logs (student_id, student_name, status, task_accomplishment, is_overtime, timestamp)
        VALUES (?, ?, ?, ?, ?, NOW())`,
       [student_id, student_name, status, taskValue, overtimeValue]
     );
 
-    const [newRecord] = await db.query(
-      'SELECT * FROM attendance_logs WHERE id = ?',
-      [result.insertId]
-    );
+    const [newRecord] = await db.query('SELECT * FROM attendance_logs WHERE id = ?', [result.insertId]);
 
-    res.status(201).json({
-      success: true,
-      message: `${status} recorded successfully.`,
-      record:  newRecord[0]
-    });
+    res.status(201).json({ success: true, message: `${status} recorded successfully.`, record: newRecord[0] });
 
   } catch (err) {
     console.error('Attendance log error:', err);
@@ -118,11 +102,10 @@ router.post('/log', async (req, res) => {
 
 // -------------------------------------------------------
 // GET /api/attendance/status/:student_id
-// Returns today's attendance status + overtime flag
 // -------------------------------------------------------
 router.get('/status/:student_id', async (req, res) => {
   const { student_id } = req.params;
-  const today = new Date().toISOString().split('T')[0];
+  const today = getPHToday(); // ✅ PH date
 
   try {
     const [logs] = await db.query(
@@ -158,9 +141,7 @@ router.get('/status/:student_id', async (req, res) => {
 // -------------------------------------------------------
 router.get('/all', verifyToken, async (req, res) => {
   try {
-    const [records] = await db.query(
-      `SELECT * FROM attendance_logs ORDER BY timestamp DESC`
-    );
+    const [records] = await db.query(`SELECT * FROM attendance_logs ORDER BY timestamp DESC`);
     res.json({ success: true, records });
   } catch (err) {
     console.error('Fetch all error:', err);
@@ -196,10 +177,7 @@ router.get('/total-hours/:student_id', verifyToken, async (req, res) => {
       `SELECT * FROM v_student_total_hours WHERE student_id = ?`,
       [req.params.student_id]
     );
-    res.json({
-      success: true,
-      data: rows[0] || { total_hours: 0, total_days: 0 }
-    });
+    res.json({ success: true, data: rows[0] || { total_hours: 0, total_days: 0 } });
   } catch (err) {
     console.error('Total hours error:', err);
     res.status(500).json({ success: false, message: 'Server error.' });
@@ -208,31 +186,25 @@ router.get('/total-hours/:student_id', verifyToken, async (req, res) => {
 
 // -------------------------------------------------------
 // GET /api/attendance/history/:student_id
-// Student views their own shift history — no admin required
 // -------------------------------------------------------
 router.get('/history/:student_id', async (req, res) => {
   const { student_id } = req.params;
   try {
     const [logs] = await db.query(
-      `SELECT * FROM attendance_logs
-       WHERE student_id = ?
-       ORDER BY timestamp ASC`,
+      `SELECT * FROM attendance_logs WHERE student_id = ? ORDER BY timestamp ASC`,
       [student_id]
     );
 
     const groups = {};
     logs.forEach(r => {
-      const dateKey = new Date(r.timestamp).toISOString().split('T')[0];
+      // timestamp is already PH time (db timezone: +08:00), so toLocaleDateString
+      // with Asia/Manila is consistent
+      const dateKey = new Date(r.timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
       if (!groups[dateKey]) {
         groups[dateKey] = {
-          date:                dateKey,
-          timeIn:              null,
-          timeOut:             null,
-          timeInRaw:           null,
-          timeOutRaw:          null,
-          task_accomplishment: '',
-          is_overtime:         false,
-          totalHours:          0,
+          date: dateKey, timeIn: null, timeOut: null,
+          timeInRaw: null, timeOutRaw: null,
+          task_accomplishment: '', is_overtime: false, totalHours: 0,
         };
       }
 
@@ -241,14 +213,12 @@ router.get('/history/:student_id', async (req, res) => {
         groups[dateKey].timeIn    = ts.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
         groups[dateKey].timeInRaw = ts;
         if (r.is_overtime) groups[dateKey].is_overtime = true;
-        // Show task from Time In if it's not the default placeholder
         if (r.task_accomplishment && r.task_accomplishment !== 'Ongoing...')
           groups[dateKey].task_accomplishment = r.task_accomplishment;
       }
       if (r.status === 'Time Out') {
         groups[dateKey].timeOut    = ts.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
         groups[dateKey].timeOutRaw = ts;
-        // Time Out task always wins over Time In task
         if (r.task_accomplishment && r.task_accomplishment !== 'Ongoing...')
           groups[dateKey].task_accomplishment = r.task_accomplishment;
       }
@@ -280,17 +250,13 @@ router.get('/history/:student_id', async (req, res) => {
 });
 
 // -------------------------------------------------------
-// PUT /api/attendance/:date/student/:student_id
-// Admin edits an existing daily record
-// FIXED: task_accomplishment falls back to Time In row
-//        if no Time Out row exists yet
+// PUT /api/attendance/:date/student/:student_id  (Admin)
 // -------------------------------------------------------
 router.put('/:date/student/:student_id', verifyToken, async (req, res) => {
   const { date, student_id } = req.params;
   const { time_in, time_out, task_accomplishment, is_overtime } = req.body;
 
   try {
-    // Update Time In timestamp + overtime flag
     if (time_in !== undefined) {
       const newTimestamp = new Date(`${date}T${time_in}:00`);
       await db.query(
@@ -300,26 +266,54 @@ router.put('/:date/student/:student_id', verifyToken, async (req, res) => {
       );
     }
 
-    // Update Time Out timestamp
     if (time_out !== undefined) {
       const newTimestamp = new Date(`${date}T${time_out}:00`);
-      await db.query(
-        `UPDATE attendance_logs SET timestamp = ?
-         WHERE student_id = ? AND status = 'Time Out' AND DATE(timestamp) = ?`,
-        [newTimestamp, student_id, date]
-      );
-    }
 
-    // Update task accomplishment
-    // Try Time Out row first; fall back to Time In row if no Time Out exists yet
-    if (task_accomplishment !== undefined) {
-      const [timeOutRows] = await db.query(
+      // Check if a Time Out row already exists for this student on this date
+      const [existingOut] = await db.query(
         `SELECT id FROM attendance_logs
-         WHERE student_id = ? AND status = 'Time Out' AND DATE(timestamp) = ?
-         LIMIT 1`,
+         WHERE student_id = ? AND status = 'Time Out' AND DATE(timestamp) = ? LIMIT 1`,
         [student_id, date]
       );
 
+      if (existingOut.length > 0) {
+        // Row exists — just update the timestamp
+        await db.query(
+          `UPDATE attendance_logs SET timestamp = ?
+           WHERE student_id = ? AND status = 'Time Out' AND DATE(timestamp) = ?`,
+          [newTimestamp, student_id, date]
+        );
+      } else {
+        // ✅ No Time Out row — student forgot to time out.
+        // Admin forced it: INSERT a new Time Out row.
+        // Grab student_name and is_overtime from the Time In row.
+        const [timeInRow] = await db.query(
+          `SELECT student_name, is_overtime FROM attendance_logs
+           WHERE student_id = ? AND status = 'Time In' AND DATE(timestamp) = ? LIMIT 1`,
+          [student_id, date]
+        );
+        if (timeInRow.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Cannot force Time Out: no Time In record found for this date.'
+          });
+        }
+        const { student_name, is_overtime } = timeInRow[0];
+        await db.query(
+          `INSERT INTO attendance_logs (student_id, student_name, status, task_accomplishment, is_overtime, timestamp)
+           VALUES (?, ?, 'Time Out', ?, ?, ?)`,
+          [student_id, student_name, task_accomplishment || 'Forced time out by admin', is_overtime, newTimestamp]
+        );
+      }
+    }
+
+    if (task_accomplishment !== undefined) {
+      const [timeOutRows] = await db.query(
+        `SELECT id FROM attendance_logs
+         WHERE student_id = ? AND status = 'Time Out'
+         AND DATE(timestamp) = ? LIMIT 1`,
+        [student_id, date]
+      );
       if (timeOutRows.length > 0) {
         await db.query(
           `UPDATE attendance_logs SET task_accomplishment = ?
@@ -327,7 +321,6 @@ router.put('/:date/student/:student_id', verifyToken, async (req, res) => {
           [task_accomplishment, student_id, date]
         );
       } else {
-        // No Time Out yet — save on Time In row so edit is never lost
         await db.query(
           `UPDATE attendance_logs SET task_accomplishment = ?
            WHERE student_id = ? AND status = 'Time In' AND DATE(timestamp) = ?`,
@@ -344,39 +337,28 @@ router.put('/:date/student/:student_id', verifyToken, async (req, res) => {
 });
 
 // -------------------------------------------------------
-// POST /api/attendance/manual
-// Admin manually adds a full attendance record for a student
+// POST /api/attendance/manual  (Admin)
 // -------------------------------------------------------
 router.post('/manual', verifyToken, async (req, res) => {
   const { student_id, date, time_in, time_out, task_accomplishment, is_overtime } = req.body;
 
   if (!student_id || !date || !time_in) {
-    return res.status(400).json({
-      success: false,
-      message: 'student_id, date, and time_in are required.'
-    });
+    return res.status(400).json({ success: false, message: 'student_id, date, and time_in are required.' });
   }
 
   try {
-    const [rows] = await db.query(
-      'SELECT full_name FROM students WHERE id = ? LIMIT 1',
-      [student_id]
-    );
+    const [rows] = await db.query('SELECT full_name FROM students WHERE id = ? LIMIT 1', [student_id]);
     if (rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Student not found.' });
     }
     const student_name = rows[0].full_name;
 
     const [existing] = await db.query(
-      `SELECT id FROM attendance_logs
-       WHERE student_id = ? AND DATE(timestamp) = ? LIMIT 1`,
+      `SELECT id FROM attendance_logs WHERE student_id = ? AND DATE(timestamp) = ? LIMIT 1`,
       [student_id, date]
     );
     if (existing.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: 'A record already exists for this student on that date. Use edit instead.'
-      });
+      return res.status(409).json({ success: false, message: 'A record already exists for this student on that date. Use edit instead.' });
     }
 
     const timeInTs    = new Date(`${date}T${time_in}:00`);
@@ -404,9 +386,4 @@ router.post('/manual', verifyToken, async (req, res) => {
   }
 });
 
-// -------------------------------------------------------
-// ⚠️  module.exports MUST be at the very end of the file
-//     Having it in the middle was silently cutting off
-//     history, PUT edit, and manual routes
-// -------------------------------------------------------
 module.exports = router;

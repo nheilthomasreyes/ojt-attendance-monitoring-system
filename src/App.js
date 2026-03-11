@@ -110,8 +110,6 @@ const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 //
 // const fetchAttendance = async () => {
 //   try {
-//     // Gagamit tayo ng .select('*') para sigurado,
-//     // PERO siguraduhin na walang ibang code na naghahanap ng 'type' column.
 //     const { data, error } = await supabase
 //       .from('attendance_logs')
 //       .select('*')
@@ -137,16 +135,15 @@ const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 //   try {
 //     const { data, error } = await supabase
 //       .from('attendance_logs')
-//       .select('*') // Mahalaga ang asterisk para makuha ang task_accomplishment
+//       .select('*')
 //       .order('timestamp', { ascending: false });
 //
 //     if (error) throw error;
 //
 //     if (data) {
-//       // I-map ang database columns (student_name, status) sa UI keys (name, type)
 //       const mappedData = data.map(record => ({
 //         id: record.id,
-//         name: record.student_name,       // Mula sa Table Editor
+//         name: record.student_name,
 //         timestamp: record.timestamp,
 //         type: record.status === 'Time In' ? 'time-in' : 'time-out',
 //         studentId: record.student_id,
@@ -160,7 +157,6 @@ const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 //   }
 // };
 //
-// // Tawagin ito sa useEffect para mawala ang 'not defined' error
 // useEffect(() => {
 //   fetchAttendance();
 // }, []);
@@ -186,6 +182,21 @@ const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 // }, [session]);
 // ============================================================
 
+// ── NEW: Helper to clear all student-related localStorage ──
+// Used on logout AND when a stale session from a previous day
+// is detected on mount. Also clears any attendance_status_ keys
+// left over from previous days.
+const clearStudentStorage = () => {
+  localStorage.removeItem('ojt_token');
+  localStorage.removeItem('ojt_role');
+  localStorage.removeItem('ojt_student');
+  localStorage.removeItem('ojt_expires_at');
+  // Clear any stale attendance_status_YYYY-MM-DD keys
+  Object.keys(localStorage)
+    .filter(k => k.startsWith('attendance_status_'))
+    .forEach(k => localStorage.removeItem(k));
+};
+
 // ── NEW: Token helpers ─────────────────────────────────
 const getStoredSession = () => {
   const token = localStorage.getItem('ojt_token');
@@ -197,14 +208,27 @@ const getStoredSession = () => {
     const payload = JSON.parse(atob(token.split('.')[1]));
     if (payload.exp * 1000 < Date.now()) {
       // Token expired — clear storage
-      localStorage.removeItem('ojt_token');
-      localStorage.removeItem('ojt_role');
-      localStorage.removeItem('ojt_student');
-    localStorage.removeItem('ojt_expires_at'); // clear midnight timer
+      clearStudentStorage();
       return null;
     }
+
+    // ✅ FIXED: If it's a student token issued on a PREVIOUS PH calendar day,
+    // force re-login. Handles the case where:
+    //   - Midnight auto-logout didn't fire (phone was asleep, tab was closed)
+    //   - User left the browser open overnight
+    // Without this, attendanceStatus stays 'completed' into the next day.
+    if (role === 'student') {
+      const phToday  = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+      const tokenDay = new Date(payload.iat * 1000).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+      if (tokenDay !== phToday) {
+        clearStudentStorage();
+        return null;
+      }
+    }
+
     return { token, role, ...payload };
   } catch {
+    clearStudentStorage();
     return null;
   }
 };
@@ -216,13 +240,6 @@ export default function App() {
   const [initializing, setInitializing]         = useState(true);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [officeSSID, setOfficeSSID]             = useState('Steerhub First Floor');
-
-  // ── Listen for manual record add/edit from AdminPanel ──
-  useEffect(() => {
-    const handler = () => fetchAttendance();
-    window.addEventListener('ojt-refresh', handler);
-    return () => window.removeEventListener('ojt-refresh', handler);
-  }, []);
 
   // ── On mount: restore session from localStorage ──────
   // OLD: supabase.auth.getSession() → now reads from localStorage JWT
@@ -238,9 +255,6 @@ export default function App() {
   }, []);
 
   // ── Auto-logout at midnight for student sessions ─────────
-  // Schedules a timeout that fires exactly at midnight,
-  // clears the session, and sends the student back to login.
-  // Also runs on mount to handle page refreshes after midnight.
   useEffect(() => {
     if (session?.role !== 'student') return;
 
@@ -252,12 +266,10 @@ export default function App() {
     const msUntilExpiry = new Date(expiresAt).getTime() - Date.now();
 
     if (msUntilExpiry <= 0) {
-      // Already expired (e.g. page was left open past midnight)
       handleLogout();
       return;
     }
 
-    // Schedule auto-logout at exactly midnight
     const timer = setTimeout(() => {
       alert('Your session has expired. Please log in again for today.');
       handleLogout();
@@ -266,7 +278,7 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [session]);
 
-  // ── Fetch SSID from backend (replaces localStorage SSID) ──
+  // ── Fetch SSID from backend ───────────────────────────
   useEffect(() => {
     const loadSSID = async () => {
       try {
@@ -275,7 +287,6 @@ export default function App() {
         if (data.success) setOfficeSSID(data.ssid);
       } catch (err) {
         console.warn('Could not load SSID from server, using default.', err.message);
-        // Fallback: try localStorage (old behavior)
         const saved = localStorage.getItem('officeSSID');
         if (saved) setOfficeSSID(saved);
       }
@@ -301,7 +312,6 @@ export default function App() {
         return;
       }
 
-      // Map MySQL columns → UI shape (same mapping as old Supabase version)
       const mappedData = data.records.map(record => ({
         id:                 record.id,
         name:               record.student_name,
@@ -348,7 +358,6 @@ export default function App() {
       });
     } catch (err) {
       console.warn('SSID update failed:', err.message);
-      // Fallback: still save to localStorage like before
       localStorage.setItem('officeSSID', newSSID);
     }
   };
@@ -380,10 +389,7 @@ export default function App() {
   // OLD: await supabase.auth.signOut()
   // NEW: clear localStorage JWT (stateless — no server call needed)
   const handleLogout = () => {
-    localStorage.removeItem('ojt_token');
-    localStorage.removeItem('ojt_role');
-    localStorage.removeItem('ojt_student');
-    localStorage.removeItem('ojt_expires_at'); // clear midnight timer
+    clearStudentStorage();
     setSession(null);
     setAttendanceRecords([]);
     setCurrentPage('home');
@@ -401,8 +407,6 @@ export default function App() {
   // ── Routing Logic ─────────────────────────────────────
 
   // If no session → show unified Login page
-  // OLD: if (currentPage === 'admin' && !session) return <AdminLogin ... />;
-  // NEW: single LoginPage handles both admin and student login + enroll
   if (!session) {
     return (
       <LoginPage
@@ -442,9 +446,7 @@ export default function App() {
         officeSSID={officeSSID}
         onUpdateSSID={handleUpdateSSID}
         onBack={handleLogout}
-        session={session}             // NEW: passed so AdminPage can show admin email in header
-        // OLD: these records came from Supabase real-time subscription
-        // NEW: fetched from GET /api/attendance/all, polled every 30s
+        session={session}
       />
     );
   }
@@ -489,7 +491,6 @@ export default function App() {
           <div className="flex items-center justify-center gap-2 mt-4 flex-wrap px-4">
             <div className="flex items-center gap-1 px-3 py-1 bg-cyan-500/10 border border-cyan-500/50 rounded-full">
               <Zap className="size-3 sm:size-4 text-cyan-400" />
-              {/* OLD: v2.0-DB (Supabase), NEW: v3.0-MySQL */}
               <span className="text-xs sm:text-sm font-mono text-cyan-400">v3.0-MySQL</span>
             </div>
             <div className="flex items-center gap-1 px-3 py-1 bg-green-500/10 border border-green-500/50 rounded-full">
@@ -543,8 +544,6 @@ export default function App() {
           <div className="inline-flex items-center gap-2 px-3 sm:px-4 py-2 bg-gray-800/50 border border-gray-700 rounded-lg">
             <div className="size-2 bg-yellow-400 rounded-full animate-pulse flex-shrink-0"></div>
             <span className="text-xs font-mono text-gray-400">
-              {/* OLD: Cloud Sync Active • Security V2 */}
-              {/* NEW: shows logged-in user info */}
               {session?.role === 'admin'
                 ? `Admin: ${session.email}`
                 : `Student: ${session?.full_name || session?.email}`}
