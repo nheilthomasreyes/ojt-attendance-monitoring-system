@@ -141,7 +141,9 @@ router.get('/status/:student_id', async (req, res) => {
 // -------------------------------------------------------
 router.get('/all', verifyToken, async (req, res) => {
   try {
-    const [records] = await db.query(`SELECT * FROM attendance_logs ORDER BY timestamp DESC`);
+    const [records] = await db.query(
+      `SELECT * FROM attendance_logs ORDER BY timestamp DESC`
+    );
     res.json({ success: true, records });
   } catch (err) {
     console.error('Fetch all error:', err);

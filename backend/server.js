@@ -1,6 +1,10 @@
 // server.js — Main entry point
 require('dotenv').config();
 
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err.stack);
+});
+
 const express = require('express');
 const cors    = require('cors');
 
@@ -21,18 +25,26 @@ app.set('trust proxy', true);
 // ── CORS — allow both localhost and network IP ──────────
 // This fixes "Failed to fetch" on phones accessing via 192.168.0.x
 const allowedOrigins = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  `http://${process.env.HOST_IP || '192.168.0.226'}:3000`, 
+  'https://localhost:3000',
+  'https://127.0.0.1:3000',
+  `https://${process.env.HOST_IP || '192.168.0.126'}:3000`, 
 ];
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, Postman, etc.)
+    // Allow requests with no origin (mobile apps, Postman, curl)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    // Also allow any 192.168.0.x origin dynamically
-    if (/^http:\/\/192\.168\.0\.\d+:3000$/.test(origin)) return callback(null, true);
+
+    // Allow localhost on any port (http or https)
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+
+    // Allow any 192.168.0.x origin on any port (http or https)
+    if (/^https?:\/\/192\.168\.0\.\d+(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+
     callback(new Error(`CORS blocked: ${origin}`));
   },
   credentials: true,
@@ -60,7 +72,15 @@ app.use((req, res) => {
 
 // ── Start Server — listen on all interfaces ─────────────
 // '0.0.0.0' allows phones on the same WiFi to reach the backend
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 OJT Backend running on http://localhost:${PORT}`);
-  console.log(`📱 Network access: http://192.168.0.226:${PORT}`);
+const https = require('https');
+const fs    = require('fs');
+const path  = require('path');
+
+const sslOptions = {
+  key:  fs.readFileSync(path.join(__dirname, 'key.pem')),
+  cert: fs.readFileSync(path.join(__dirname, 'cert.pem')),
+};
+
+https.createServer(sslOptions, app).listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 OJT Backend running on https://192.168.0.126:${PORT}`);
 });

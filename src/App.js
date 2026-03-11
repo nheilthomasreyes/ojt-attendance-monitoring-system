@@ -4,7 +4,7 @@
 //  All old Supabase code kept as comments for reference
 // ============================================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { StudentPage } from './components/StudentPage';
 import { StudentHistory } from './components/StudentHistory';
 import { AdminPage } from './components/AdminPage';
@@ -13,7 +13,7 @@ import { UserCircle, Shield, Activity, Zap, LogOut, Loader2 } from 'lucide-react
 import { motion } from 'framer-motion';
 
 // ── API base URL (set REACT_APP_API_URL in your .env) ──
-const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const API = process.env.REACT_APP_API_URL || 'https://localhost:5000';
 
 // ============================================================
 //  OLD SUPABASE IMPORT (kept for reference)
@@ -297,49 +297,46 @@ export default function App() {
   // ── Fetch attendance records from MySQL backend ───────
   // OLD: supabase.from('attendance_logs').select('*')
   // NEW: GET /api/attendance/all  (admin JWT required)
-  const fetchAttendance = async () => {
-    const token = localStorage.getItem('ojt_token');
-    if (!token) return;
+  const fetchAttendance = useCallback(async () => {
+  const token = localStorage.getItem('ojt_token');
+  if (!token) return;
 
-    try {
-      const res  = await fetch(`${API}/api/attendance/all`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
+  try {
+    const res  = await fetch(`${API}/api/attendance/all`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
 
-      if (!data.success) {
-        console.error('Fetch attendance error:', data.message);
-        return;
-      }
-
-      const mappedData = data.records.map(record => ({
-        id:                 record.id,
-        name:               record.student_name,
-        timestamp:          record.timestamp,
-        type:               record.status === 'Time In' ? 'time-in' : 'time-out',
-        studentId:          record.student_id,
-        student_id:         record.student_id,
-        status:             record.status,
-        task_accomplishment: record.task_accomplishment,
-        is_overtime:        record.is_overtime,
-      }));
-
-      setAttendanceRecords(mappedData);
-    } catch (err) {
-      console.error('Error fetching attendance:', err.message);
+    if (!data.success) {
+      console.error('Fetch attendance error:', data.message);
+      return;
     }
-  };
 
-  // ── Auto-fetch when admin session is active ───────────
-  // OLD: Supabase real-time .channel() subscription
-  // NEW: fetch on mount + poll every 30 seconds
-  useEffect(() => {
-    if (session?.role === 'admin') {
-      fetchAttendance();
-      const interval = setInterval(fetchAttendance, 30000);
-      return () => clearInterval(interval);
-    }
-  }, [session]);
+    const mappedData = data.records.map(record => ({
+      id:                  record.id,
+      name:                record.student_name,
+      timestamp:           record.timestamp,
+      type:                record.status === 'Time In' ? 'time-in' : 'time-out',
+      studentId:           record.student_id,
+      student_id:          record.student_id,
+      status:              record.status,
+      task_accomplishment: record.task_accomplishment,
+      is_overtime:         record.is_overtime,
+    }));
+
+    setAttendanceRecords(mappedData);
+  } catch (err) {
+    console.error('Error fetching attendance:', err.message);
+  }
+}, []);
+
+useEffect(() => {
+  if (session?.role === 'admin') {
+    fetchAttendance();
+    const interval = setInterval(fetchAttendance, 30000);
+    return () => clearInterval(interval);
+  }
+}, [session, fetchAttendance]);
 
   // ── Update SSID ───────────────────────────────────────
   // OLD: localStorage.setItem('officeSSID', newSSID)
@@ -364,11 +361,13 @@ export default function App() {
 
   // ── Login handlers (called from LoginPage) ────────────
   const handleAdminLogin = (token, admin) => {
-    const sessionData = { token, role: 'admin', id: admin.id, email: admin.email };
-    setSession(sessionData);
-    setCurrentPage('admin');
-  };
-
+  // Save token FIRST so fetchAttendance can read it
+  localStorage.setItem('ojt_token', token);
+  localStorage.setItem('ojt_role', 'admin');
+  const sessionData = { token, role: 'admin', id: admin.id, email: admin.email };
+  setSession(sessionData);
+  setCurrentPage('admin');
+};
   const handleStudentLogin = (token, student, expiresAt) => {
     const sessionData = {
       token,

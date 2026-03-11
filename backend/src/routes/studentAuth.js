@@ -123,9 +123,9 @@ router.post('/login', async (req, res) => {
 
   try {
     const [rows] = await db.query(
-      `SELECT * FROM students WHERE student_code = ? AND is_active = 1 LIMIT 1`,
-      [student_code]
-    );
+  `SELECT * FROM students WHERE student_code = ? LIMIT 1`,
+  [student_code]
+);
 
     if (rows.length === 0) {
       return res.status(401).json({

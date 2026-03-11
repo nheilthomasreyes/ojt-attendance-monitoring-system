@@ -147,7 +147,7 @@ export function QRScanner({ onScanSuccess }) {
           ) : (
             <motion.div key="up" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full h-full flex flex-col items-center justify-center bg-gray-900 p-8">
               {/* Hidden div for file scanner to hook into */}
-              <div id="file-reader-hidden" className="hidden"></div>
+              <div id="file-reader-hidden" style={{ position: 'absolute', visibility: 'hidden', width: '1px', height: '1px', overflow: 'hidden' }}></div>
               
               <Upload className="size-12 text-cyan-500 mb-4" />
               <label className="bg-white text-black px-8 py-3 rounded-full font-bold cursor-pointer hover:bg-cyan-50 transition-colors">
