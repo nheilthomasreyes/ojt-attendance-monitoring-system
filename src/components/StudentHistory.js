@@ -52,13 +52,19 @@ export function StudentHistory({ student, onBack }) {
 
   const attendedDates = useMemo(() => {
     const s = new Set();
-    records.forEach(r => { if (r.timeIn && r.timeOut) s.add(r.date); });
+    records.forEach(r => {
+      // Complete = timed in, timed out, AND worked at least 8 hours
+      if (r.timeIn && r.timeOut && r.totalHours >= 8) s.add(r.date);
+    });
     return s;
   }, [records]);
 
   const incompletesDates = useMemo(() => {
     const s = new Set();
-    records.forEach(r => { if (r.timeIn && !r.timeOut) s.add(r.date); });
+    records.forEach(r => {
+      // Incomplete = timed in but no time out, OR timed out but worked less than 8 hours
+      if (r.timeIn && (!r.timeOut || r.totalHours < 8)) s.add(r.date);
+    });
     return s;
   }, [records]);
 
@@ -160,7 +166,7 @@ export function StudentHistory({ student, onBack }) {
             </tr>
           </thead>
           <tbody>
-            {[...records].reverse().map((r, i) => {
+            {records.map((r, i) => {
               // FIXED: parseLocalDate prevents UTC offset date shift
               const dateStr = parseLocalDate(r.date).toLocaleDateString('en-PH', {
                 weekday: 'short', month: 'long', day: 'numeric', year: 'numeric'
@@ -238,7 +244,9 @@ export function StudentHistory({ student, onBack }) {
               const isIncomplete = incompletesDates.has(cell.iso);
               const isToday      = cell.iso === new Date().toISOString().split('T')[0];
               const rec = records.find(r => r.date === cell.iso);
-              const isOT = rec?.is_overtime;
+              // OT is only valid if flag is set AND they actually worked more than 8 hours
+              // Prevents the case where overtime was toggled on but student left early
+              const isOT = rec?.is_overtime && rec?.totalHours > 8;
               return (
                 <div key={cell.iso} className="aspect-square flex items-center justify-center relative">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center mono text-xs font-bold transition-all
@@ -297,31 +305,35 @@ export function StudentHistory({ student, onBack }) {
               <p className="mono text-xs text-gray-400 uppercase tracking-widest">Daily Shift Records</p>
               <span className="ml-auto mono text-[10px] text-gray-600">{records.length} entries</span>
             </div>
-            {[...records].reverse().map((r, i) => {
+            {records.map((r, i) => {
               const hasTimeIn  = !!r.timeIn  && r.timeIn  !== '--:-- --';
               const hasTimeOut = !!r.timeOut && r.timeOut !== '--:-- --';
               // FIXED: parseLocalDate prevents one-day-behind bug on screen cards too
               const dateStr = parseLocalDate(r.date).toLocaleDateString('en-PH', {
                 weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
               });
+              // Same rule as calendar: OT only if flag AND actually worked > 8h
+              const cardIsOT = r.is_overtime && r.totalHours > 8;
               return (
                 <motion.div key={r.date} initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
-                  className={`rounded-2xl border p-4 ${r.is_overtime ? 'bg-yellow-500/5 border-yellow-500/20' : 'bg-white/3 border-white/8'}`}>
+                  className={`rounded-2xl border p-4 ${cardIsOT ? 'bg-yellow-500/5 border-yellow-500/20' : 'bg-white/3 border-white/8'}`}>
                   <div className="flex items-start justify-between mb-3 pb-3 border-b border-white/5">
                     <p className="mono text-xs font-bold text-white uppercase tracking-wide">{dateStr}</p>
                     <div className="flex items-center gap-2">
-                      {r.is_overtime && (
+                      {cardIsOT && (
                         <span className="flex items-center gap-1 px-2 py-0.5 bg-yellow-500/20 border border-yellow-500/40 rounded-full mono text-[10px] font-bold text-yellow-400">
                           <Zap size={9} /> OT
                         </span>
                       )}
                       {r.totalHours > 0 && (
-                        <span className={`px-2 py-0.5 rounded-full mono text-[10px] font-bold border ${r.is_overtime ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400' : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400'}`}>
+                        <span className={`px-2 py-0.5 rounded-full mono text-[10px] font-bold border ${cardIsOT ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400' : r.totalHours < 8 ? 'bg-orange-500/10 border-orange-500/30 text-orange-400' : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400'}`}>
                           {r.totalHours}h
                         </span>
                       )}
-                      {!hasTimeOut && (
-                        <span className="px-2 py-0.5 bg-orange-500/10 border border-orange-500/30 rounded-full mono text-[10px] text-orange-400">Incomplete</span>
+                      {(!hasTimeOut || (hasTimeOut && r.totalHours < 8)) && (
+                        <span className="px-2 py-0.5 bg-orange-500/10 border border-orange-500/30 rounded-full mono text-[10px] text-orange-400">
+                          {!hasTimeOut ? 'No Time Out' : `Short shift (${r.totalHours}h)`}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -330,11 +342,11 @@ export function StudentHistory({ student, onBack }) {
                       <p className="mono text-[9px] text-gray-500 uppercase tracking-widest mb-1">Time In</p>
                       <p className={`mono text-sm font-black ${hasTimeIn ? 'text-cyan-400' : 'text-gray-600'}`}>{r.timeIn || '--:-- --'}</p>
                     </div>
-                    <div className={`rounded-xl p-3 border ${hasTimeOut ? r.is_overtime ? 'bg-yellow-500/5 border-yellow-500/20' : 'bg-orange-500/5 border-orange-500/20' : 'bg-white/3 border-white/5'}`}>
+                    <div className={`rounded-xl p-3 border ${hasTimeOut ? cardIsOT ? 'bg-yellow-500/5 border-yellow-500/20' : 'bg-orange-500/5 border-orange-500/20' : 'bg-white/3 border-white/5'}`}>
                       <p className="mono text-[9px] text-gray-500 uppercase tracking-widest mb-1">
-                        Time Out {r.is_overtime && hasTimeOut && <span className="text-yellow-500">⚡</span>}
+                        Time Out {cardIsOT && hasTimeOut && <span className="text-yellow-500">⚡</span>}
                       </p>
-                      <p className={`mono text-sm font-black ${hasTimeOut ? r.is_overtime ? 'text-yellow-400' : 'text-orange-400' : 'text-gray-600'}`}>{r.timeOut || '--:-- --'}</p>
+                      <p className={`mono text-sm font-black ${hasTimeOut ? cardIsOT ? 'text-yellow-400' : 'text-orange-400' : 'text-gray-600'}`}>{r.timeOut || '--:-- --'}</p>
                     </div>
                   </div>
                   <div className="bg-black/30 rounded-xl p-3 border border-white/5">
