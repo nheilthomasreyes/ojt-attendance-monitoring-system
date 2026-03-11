@@ -203,20 +203,30 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
         let decimalHours = diffInMs > 0 ? diffInMs / (1000 * 60 * 60) : 0;
         if (decimalHours > 5) decimalHours -= 1;
         groups[groupKey].totalHours = Math.max(0, decimalHours).toFixed(2);
-      }
-    });
+          if (parseFloat(groups[groupKey].totalHours) <= 8) {
+            groups[groupKey].is_overtime = false;
+          }
+        }
+      });
 
     return Object.values(groups).map(g => ({
       ...g,
       timeIn:              g.timeIn  || "--:-- --",
       timeOut:             g.timeOut || "--:-- --",
       task_accomplishment: g.task_accomplishment || "No task reported",
-    })).sort((a, b) => b.rawDate - a.rawDate);
+    })).sort((a, b) => {
+      // Sort by shift date descending (latest day first), then alphabetically by name
+      const dateA = a.timeInRaw || a.rawDate;
+      const dateB = b.timeInRaw || b.rawDate;
+      const dayA  = new Date(dateA).setHours(0, 0, 0, 0);
+      const dayB  = new Date(dateB).setHours(0, 0, 0, 0);
+      if (dayB !== dayA) return dayB - dayA;
+      return a.student_name.localeCompare(b.student_name);
+    });
   }, [records]);
 
   // ── Filter Logic ──────────────────────────────────────
   const handleApplyFilter = useCallback(() => {
-    setCurrentPage(1);
     const filtered = groupedRecords.filter(r => {
       const matchesName = selectedName === 'all' || r.student_name === selectedName;
       let matchesMonth  = true;
@@ -233,6 +243,10 @@ export function AdminPanel({ records, officeSSID, onUpdateSSID }) {
   useEffect(() => {
     handleApplyFilter();
   }, [handleApplyFilter]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedName, selectedMonth]);
 
   const uniqueNames = useMemo(() => {
     const names = groupedRecords.map(r => r.student_name);
