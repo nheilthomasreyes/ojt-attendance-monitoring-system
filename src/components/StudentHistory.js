@@ -148,8 +148,30 @@ export function StudentHistory({ student, onBack }) {
         .mono { font-family: 'JetBrains Mono', monospace !important; }
         @media print {
           .no-print { display: none !important; }
-          body { background: white !important; color: black !important; margin: 0; }
+          body { background: white !important; color: black !important; margin: 0; padding: 0; }
           .print-table-wrap { display: block !important; }
+          html, body {
+            width: 100% !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+            position: static !important;
+          }
+          div, section, main, article {
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
+            position: static !important;
+          }
+          .print-table {
+            width: 100%;
+            border-collapse: collapse;
+            page-break-inside: auto;
+          }
+          .print-table thead { display: table-header-group; }
+          .print-table tfoot { display: table-footer-group; }
+          .print-table tr { page-break-inside: avoid; page-break-after: auto; }
+          .print-table td, .print-table th { page-break-inside: avoid; }
         }
         @media screen { .print-table-wrap { display: none !important; } }
         .print-table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -160,7 +182,7 @@ export function StudentHistory({ student, onBack }) {
       `}</style>
 
       {/* ── Print-only table (uses filteredRecords) ─────── */}
-      <div className="print-table-wrap" style={{ padding: '32px' }}>
+      <div className="print-table-wrap" style={{ padding: '32px', height: 'auto', overflow: 'visible', position: 'relative' }}>
         <div style={{ borderBottom: '3px solid black', paddingBottom: '16px', marginBottom: '20px' }}>
           <h1 style={{ fontSize: '22px', fontWeight: 900, textTransform: 'uppercase', margin: 0 }}>OJT Attendance Report</h1>
           <p style={{ fontSize: '15px', fontWeight: 700, margin: '4px 0 2px' }}>{student?.full_name}</p>
